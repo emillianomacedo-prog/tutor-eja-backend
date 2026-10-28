@@ -423,7 +423,7 @@ app.get('/api/aluno/:matricula_id/progresso', async (req, res) => {
 app.get('/api/admin/catalogo/:segmento', verificarToken, async (req, res) => {
   const { segmento } = req.params;
   try {
-    const { data: catalogo, error } = await supabase.from('catalogo_habilidades').select('habilidade_codigo, area, descricao').eq('segmento', segmento).order('area', { ascending: true }).order('habilidade_codigo', { ascending: true });
+    const { data: catalogo, error } = await supabase.from('catalogo_habilidades').select('habilidade_codigo, area, status, descricao').eq('segmento', segmento).order('area', { ascending: true }).order('habilidade_codigo', { ascending: true });
     if (error) throw error;
     return res.json(catalogo);
   } catch (error) { return res.status(500).json({ erro: "Erro ao buscar catálogo." }); }
