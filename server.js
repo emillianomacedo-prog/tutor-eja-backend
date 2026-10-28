@@ -34,7 +34,7 @@ const INTERVALO_CONCLUSAO_MS = 24 * 60 * 60 * 1000;
 app.get('/', (req, res) => res.send('Backend do Tutor Nova EJA está rodando!'));
 
 // =====================================================================
-// FUNÇÕES AUXILIARES (MANTIDAS)
+// FUNÇÕES AUXILIARES
 // =====================================================================
 async function gerarRespostaIA(promptSistema, historico, mensagemAluno) {
   for (let i = 0; i < geminiKeys.length; i++) {
@@ -69,9 +69,6 @@ function extrairTagsQualitativas(textoIA, matricula_id) {
   return { textoLimpo: textoIA.replace(/\[.*?\]/g, '').trim(), registros };
 }
 
-// =====================================================================
-// FUNÇÕES AUXILIARES NOVAS
-// =====================================================================
 async function resolverAlunoId(idRecebido) {
   if (!idRecebido) return null;
   const { data: aluno } = await supabase.from('alunos').select('id').eq('id', idRecebido).maybeSingle();
@@ -239,14 +236,12 @@ app.get('/api/aluno/:matricula_id/habilidades', async (req, res) => {
     const { data: matricula } = await supabase.from('matriculas_estudos').select('segmento').eq('id', matricula_id).single();
     if (!matricula) return res.status(404).json({ erro: "Matrícula não encontrada." });
 
+    // Busca a matriz completa para o segmento, direto do catálogo oficial
     const { data: catalogo, error: errCat } = await supabase.from('catalogo_habilidades').select('habilidade_codigo, area, competencia, descricao').eq('segmento', matricula.segmento).order('habilidade_codigo');
+    
     if (errCat) throw errCat;
 
-    const { data: concluidas } = await supabase.from('habilidades_a_desenvolver').select('habilidade_codigo').eq('matricula_id', matricula_id).eq('status', 'concluida');
-    const setConcluidas = new Set((concluidas || []).map(h => h.habilidade_codigo));
-    const pendentes = catalogo.filter(h => !setConcluidas.has(h.habilidade_codigo));
-
-    return res.json(pendentes);
+    return res.json(catalogo);
   } catch (err) { return res.status(500).json({ erro: "Erro ao buscar habilidades." }); }
 });
 
