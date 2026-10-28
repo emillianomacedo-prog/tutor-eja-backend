@@ -1,7 +1,7 @@
 require('dotenv').config();
-const bcrypt = require('bcryptjs');
 const express = require('express');
 const cors = require('cors');
+const bcrypt = require('bcryptjs'); // <--- NOVO IMPORT
 const { createClient } = require('@supabase/supabase-js');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const Groq = require('groq-sdk');
@@ -202,14 +202,15 @@ async function verificarConclusao(aluno_id) {
 // ROTAS EXISTENTES
 // =====================================================================
 
-// LOGIN ALUNO
+// LOGIN ALUNO (Com Senha)
 app.post('/api/login', async (req, res) => {
   const { cpf, senha } = req.body;
   try {
     const { data: aluno } = await supabase.from('alunos').select('id, nome_completo, senha').eq('cpf', cpf).single();
     if (!aluno) return res.status(404).json({ erro: "CPF não encontrado." });
-// Se o aluno ainda não tem senha (cadastro antigo), define a senha digitada agora como a oficial
-if (!aluno.senha) {
+
+    // Se o aluno ainda não tem senha (cadastro antigo), define a senha digitada agora como a oficial
+    if (!aluno.senha) {
       const hash = await bcrypt.hash(senha, 10);
       await supabase.from('alunos').update({ senha: hash }).eq('id', aluno.id);
     } else {
@@ -217,6 +218,7 @@ if (!aluno.senha) {
       const senhaCorreta = await bcrypt.compare(senha, aluno.senha);
       if (!senhaCorreta) return res.status(401).json({ erro: "Senha incorreta." });
     }
+
     const { data: matricula } = await supabase.from('matriculas_estudos').select('id, segmento, turma').eq('aluno_id', aluno.id).eq('status', 'ativa').single();
     if (!matricula) return res.status(404).json({ erro: "Nenhuma matrícula ativa." });
     return res.json({ aluno: { aluno_id: aluno.id, nome: aluno.nome_completo, matricula_id: matricula.id, segmento: matricula.segmento, turma: matricula.turma } });
@@ -246,7 +248,6 @@ app.get('/api/aluno/:matricula_id/habilidades', async (req, res) => {
     const { data: matricula } = await supabase.from('matriculas_estudos').select('segmento').eq('id', matricula_id).single();
     if (!matricula) return res.status(404).json({ erro: "Matrícula não encontrada." });
 
-    // Busca a matriz completa para o segmento, direto do catálogo oficial
     const { data: catalogo, error: errCat } = await supabase.from('catalogo_habilidades').select('habilidade_codigo, area, competencia, descricao').eq('segmento', matricula.segmento).order('habilidade_codigo');
     
     if (errCat) throw errCat;
@@ -357,14 +358,19 @@ app.get('/api/admin/catalogo/:segmento', verificarToken, async (req, res) => {
   } catch (error) { return res.status(500).json({ erro: "Erro ao buscar catálogo." }); }
 });
 
+// CADASTRAR ALUNO (Com Senha)
 app.post('/api/admin/cadastrar-aluno', verificarToken, async (req, res) => {
   const { nome_completo, cpf, email, telefone_whatsapp, segmento, turma, habilidades_dispensadas, senha } = req.body;
   if (!nome_completo || !cpf || !segmento || !turma) return res.status(400).json({ erro: "Campos obrigatórios faltando." });
+  
   try {
-// Criptografa a senha (se não enviarem, usa o CPF como padrão)
+    // Criptografa a senha (se não enviarem, usa o CPF como padrão)
     const senhaHash = await bcrypt.hash(senha || cpf, 10);
+
+    const { data: aluno, error: errAluno } = await supabase.from('alunos').insert({ 
+      nome_completo, cpf, email, telefone_whatsapp, senha: senhaHash 
+    }).select().single();
     
-    const { data: aluno, error: errAluno } = await supabase.from('alunos').insert({ nome_completo, cpf, email, telefone_whatsapp, senha: senhaHash }).select().single();
     if (errAluno) {
       if (errAluno.code === '23505') return res.status(400).json({ erro: "CPF já cadastrado." });
       throw errAluno;
@@ -394,12 +400,19 @@ app.get('/api/admin/aluno/:matricula_id', verificarToken, async (req, res) => {
   } catch (error) { return res.status(500).json({ erro: "Erro ao buscar aluno." }); }
 });
 
+// EDITAR ALUNO (Com Senha Opcional)
 app.put('/api/admin/editar-aluno/:matricula_id', verificarToken, async (req, res) => {
   const { matricula_id } = req.params;
-  const { nome_completo, email, telefone_whatsapp, turma, habilidades_dispensadas } = req.body;
+  const { nome_completo, email, telefone_whatsapp, turma, habilidades_dispensadas, senha } = req.body;
   try {
     const { data: matricula } = await supabase.from('matriculas_estudos').select('aluno_id, segmento').eq('id', matricula_id).single();
-    await supabase.from('alunos').update({ nome_completo, email, telefone_whatsapp }).eq('id', matricula.aluno_id);
+    
+    const dadosAtualizados = { nome_completo, email, telefone_whatsapp };
+    if (senha) {
+      dadosAtualizados.senha = await bcrypt.hash(senha, 10);
+    }
+
+    await supabase.from('alunos').update(dadosAtualizados).eq('id', matricula.aluno_id);
     await supabase.from('matriculas_estudos').update({ turma }).eq('id', matricula_id);
     await supabase.from('habilidades_dispensadas').delete().eq('matricula_id', matricula_id);
     await supabase.from('habilidades_a_desenvolver').delete().eq('matricula_id', matricula_id);
@@ -437,6 +450,7 @@ app.get('/api/admin/alertas', verificarToken, async (req, res) => {
   } catch (error) { return res.status(500).json({ erro: "Erro." }); }
 });
 
+// ENVIAR EMAIL DE ALERTA (Customizado)
 app.post('/api/admin/alertas/:id/enviar', verificarToken, async (req, res) => {
   const { id } = req.params;
   try {
@@ -495,7 +509,6 @@ app.post('/api/admin/alertas/:id/enviar', verificarToken, async (req, res) => {
       } catch (e) { console.error("Erro ao enviar email:", e); }
     }
 
-    // Marca o alerta como resolvido
     await supabase.from('alertas_coordenacao').update({ status: 'resolvido' }).eq('id', id);
     
     return res.json({ mensagem: "E-mail disparado com sucesso." });
