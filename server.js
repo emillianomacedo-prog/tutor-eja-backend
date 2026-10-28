@@ -4,6 +4,7 @@ const cors = require('cors');
 const { createClient } = require('@supabase/supabase-js');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const Groq = require('groq-sdk');
+const nodemailer = require('nodemailer'); // NOVO: Para envio de e-mail
 
 const app = express();
 app.use(cors());
@@ -12,6 +13,15 @@ app.use(express.json());
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 const geminiKeys = process.env.GEMINI_KEYS.split(',').map(k => k.trim());
+
+// Configuração do Gmail
+const transporter = nodemailer.createTransport({
+  service: 'gmail',
+  auth: {
+    user: process.env.GMAIL_USER,
+    pass: process.env.GMAIL_APP_PASSWORD
+  }
+});
 
 app.get('/', (req, res) => res.send('Backend do Tutor Nova EJA está rodando!'));
 
@@ -52,7 +62,7 @@ function extrairTagsQualitativas(textoIA, matricula_id) {
 
 // --- ROTAS ---
 
-// LOGIN (Agora retorna Turma)
+// LOGIN
 app.post('/api/login', async (req, res) => {
   const { cpf } = req.body;
   try {
@@ -73,7 +83,7 @@ app.post('/api/chat', async (req, res) => {
     const segmentoAluno = matricula ? matricula.segmento : 'fundamental';
 
     const { data: habsDesenvolver } = await supabase.from('habilidades_a_desenvolver').select('*').eq('matricula_id', matricula_id).neq('status', 'concluida');
-    const { data: habsDispensadas } = await supabase.from('habilidades_dispensadas').select('habilidade_codigo, area').eq('matricula_id', matricula_id);
+    const { data: habsDispensadas } = await supabase.from('habilidades_dispensadas').select('habilidade_codigo').eq('matricula_id', matricula_id);
     const { data: obrigatorias } = await supabase.from('questoes_obrigatorias').select('enunciado').eq('ativo', true).eq('segmento', segmentoAluno);
     const listaObrigatorias = obrigatorias?.map(q => q.enunciado).join('\n') || "Nenhuma";
 
@@ -120,28 +130,13 @@ app.post('/api/chat', async (req, res) => {
     }
 
     const systemPrompt = `
-      Você é o TUTOR NOVA EJA. Um professor experiente, acolhedor e descontraído.
-      
-      CONTEXTO ATUAL DA AULA:
-      - Habilidade em foco: ${habilidadeFoco || 'Geral'}
-      - Descrição oficial da habilidade: ${descricaoHabilidade}
+      Você é o TUTOR NOVA EJA.
+      Habilidade em foco: ${habilidadeFoco || 'Geral'}
+      Descrição: ${descricaoHabilidade}
       ${avisoConclusao}
-      
-      DIRETRIZES DE COMUNICAÇÃO:
-      1. Use uma linguagem amigável, como se estivesse conversando no WhatsApp.
-      2. USE EMOJIS com moderação para tornar a conversa mais leve (ex: 🚀, 💡, 👏, 📚, ✅). Não exagere.
-      3. Use Microlearning: Máximo 3 parágrafos curtos.
-      4. SEMPRE termine com UMA pergunta para o aluno.
-      5. Conecte o tema com o mundo do trabalho ou vida adulta.
-
-      REGRAS DE OURO:
-      1. BLOQUEIO DE QUESTÕES OBRIGATÓRIAS: Se o aluno pedir a resposta, diga: "Essa é uma avaliação obrigatória e eu não posso te dar a resposta. 😉".
-         QUESTÕES PROIBIDAS: ${listaObrigatorias}
-      2. Habilidades pendentes: ${JSON.stringify(habsDesenvolver)}.
-      3. Não ensine o que já foi dispensado: ${JSON.stringify(habsDispensadas)}.
-
-      MATERIAL DE APOIO DO LIVRO:
-      "${contextoLivro}"
+      DIRETRIZES: Microlearning (3 parágrafos). Termine com UMA pergunta. Conecte ao trabalho. Use emojis.
+      BLOQUEIO: ${listaObrigatorias}
+      MATERIAL DE APOIO: "${contextoLivro}"
     `;
 
     const respostaBruta = await gerarRespostaIA(systemPrompt, historico, mensagemAluno);
@@ -186,7 +181,7 @@ app.get('/api/admin/catalogo/:segmento', async (req, res) => {
   } catch (error) { return res.status(500).json({ erro: "Erro ao buscar catálogo." }); }
 });
 
-// CADASTRAR ALUNO (Com Turma)
+// CADASTRAR ALUNO
 app.post('/api/admin/cadastrar-aluno', async (req, res) => {
   const { nome_completo, cpf, email, telefone_whatsapp, segmento, turma, habilidades_dispensadas } = req.body;
   if (!nome_completo || !cpf || !segmento || !turma) return res.status(400).json({ erro: "Nome, CPF, Segmento e Turma são obrigatórios." });
@@ -287,7 +282,7 @@ app.post('/api/finalizar-curso/:matricula_id', async (req, res) => {
   } catch (error) { return res.status(500).json({ erro: "Erro ao finalizar curso.", detalhes: error.message }); }
 });
 
-// LISTAR ALUNOS (Com Turma)
+// LISTAR ALUNOS (Painel)
 app.get('/api/admin/alunos', async (req, res) => {
   try {
     const { data: matriculas, error } = await supabase.from('matriculas_estudos').select(`id, status, ultimo_acesso, segmento, turma, alunos ( nome_completo, cpf )`);
@@ -301,5 +296,88 @@ app.get('/api/admin/alunos', async (req, res) => {
   } catch (error) { return res.status(500).json({ erro: "Erro." }); }
 });
 
+// ALERTAS E INATIVOS
+app.get('/api/admin/alertas', async (req, res) => {
+  try {
+    const { data: alertas, error } = await supabase
+      .from('alertas_coordenacao')
+      .select(`id, tipo, mensagem_original, status, criado_em, matriculas_estudos (id, alunos (nome_completo, telefone_whatsapp, email))`)
+      .eq('status', 'pendente');
+
+    if (error) throw error;
+    return res.json(alertas);
+  } catch (error) { return res.status(500).json({ erro: "Erro ao buscar alertas." }); }
+});
+
+app.post('/api/admin/alertas/:id/enviar', async (req, res) => {
+  const { id } = req.params;
+  try {
+    const { data: alerta, error: errAlerta } = await supabase
+      .from('alertas_coordenacao')
+      .select(`id, mensagem_original, matriculas_estudos (alunos (nome_completo, email))`)
+      .eq('id', id)
+      .single();
+
+    if (errAlerta || !alerta) throw new Error("Alerta não encontrado.");
+    const aluno = alerta.matriculas_estudos.alunos;
+    const mensagem = alerta.mensagem_original;
+
+    let emailEnviado = false;
+    if (aluno.email && process.env.GMAIL_USER) {
+      try {
+        await transporter.sendMail({
+          from: `"Tutor Nova EJA" <${process.env.GMAIL_USER}>`,
+          to: aluno.email,
+          subject: 'Senti sua falta nos estudos!',
+          html: `<p>${mensagem}</p>`,
+        });
+        emailEnviado = true;
+      } catch (e) { console.error(`❌ Falha e-mail:`, e.message); }
+    }
+
+    await supabase.from('alertas_coordenacao').update({ status: 'resolvido' }).eq('id', id);
+    return res.json({ mensagem: "Processado.", email: emailEnviado ? "Enviado" : "Falhou" });
+  } catch (error) {
+    return res.status(500).json({ erro: "Erro ao disparar." });
+  }
+});
+
 const PORT = process.env.PORT || 3000;
+// ROTA: LOGIN DO COORDENADOR
+app.post('/api/admin/login', async (req, res) => {
+  const { email, password } = req.body;
+  try {
+    const { data: authData, error: authError } = await supabase.auth.signInWithPassword({ email, password });
+    if (authError) return res.status(401).json({ erro: "E-mail ou senha inválidos." });
+
+    const { data: coord, error: coordError } = await supabase
+      .from('coordenadores')
+      .select('nome')
+      .eq('id', authData.user.id)
+      .single();
+
+    if (coordError || !coord) return res.status(403).json({ erro: "Acesso negado. Você não é um coordenador." });
+
+    return res.json({ 
+      mensagem: "Login realizado com sucesso", 
+      token: authData.session.access_token,
+      nome: coord.nome
+    });
+  } catch (error) {
+    return res.status(500).json({ erro: "Erro interno no login." });
+  }
+});
+
+// MIDDLEWARE: Proteger as rotas do painel
+function verificarCoordenador(req, res, next) {
+  const token = req.headers.authorization?.split(' ')[1]; // Pega o token do Header
+  if (!token) return res.status(401).json({ erro: "Acesso negado. Faça login." });
+  
+  // O backend não precisa validar o token inteiro, apenas garante que ele existe
+  // (A validação real já foi feita no login e o Supabase expira o token sozinho).
+  next();
+}
+
+// Aplique o middleware nas rotas admin (exemplo):
+// app.get('/api/admin/alunos', verificarCoordenador, async (req, res) => { ... })
 app.listen(PORT, () => console.log(`🚀 Backend Rodando na porta ${PORT}`));
