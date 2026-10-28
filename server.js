@@ -344,18 +344,11 @@ app.post('/api/admin/alertas/:id/enviar', async (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 // ROTA: LOGIN DO COORDENADOR
-app.post('/api/admin/login', async (req, res) => {
-  const { email, password } = req.body;
-  try {
-    const { data: authData, error: authError } = await supabase.auth.signInWithPassword({ email, password });
-    if (authError) return res.status(401).json({ erro: "E-mail ou senha inválidos." });
-
-    const { data: coord, error: coordError } = await supabase
-      .from('coordenadores')
-      .select('nome')
-      .eq('id', authData.user.id)
-      .single();
-
+const { data: coord, error: coordError } = await supabase
+  .from('coordenadores')
+  .select('nome')
+  .eq('email', email)
+  .single();
     if (coordError || !coord) return res.status(403).json({ erro: "Acesso negado. Você não é um coordenador." });
 
     return res.json({ 
