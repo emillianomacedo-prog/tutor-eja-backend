@@ -406,7 +406,7 @@ app.post('/api/chat', async (req, res) => {
 app.get('/api/aluno/:matricula_id/progresso', async (req, res) => {
   const { matricula_id } = req.params;
   try {
-    const { data: habilidades, error } = await supabase.from('habilidades_a_desenvolver').select('habilidade_codigo, area, status').eq('matricula_id', matricula_id);
+    const { data: habilidades, error } = await supabase.from('habilidades_a_desenvolver').select('habilidade_codigo, area, status, descricao').eq('matricula_id', matricula_id);
     if (error) throw error;
     const areas = ['matematica', 'linguagens', 'ciencias_natureza', 'ciencias_humanas'];
     const progresso = areas.map(area => {
