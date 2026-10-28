@@ -72,7 +72,7 @@ app.post('/api/login', async (req, res) => {
   } catch (e) { return res.status(500).json({ erro: "Erro interno." }); }
 });
 
-// LOGIN COORDENADOR (BUSCA POR E-MAIL)
+// LOGIN COORDENADOR (CORRIGIDO: BUSCA POR E-MAIL E ESTÁ ANTES DO LISTEN)
 app.post('/api/admin/login', async (req, res) => {
   const { email, password } = req.body;
   try {
