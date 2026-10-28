@@ -1,4 +1,5 @@
 require('dotenv').config();
+const bcrypt = require('bcryptjs');
 const express = require('express');
 const cors = require('cors');
 const { createClient } = require('@supabase/supabase-js');
@@ -203,10 +204,19 @@ async function verificarConclusao(aluno_id) {
 
 // LOGIN ALUNO
 app.post('/api/login', async (req, res) => {
-  const { cpf } = req.body;
+  const { cpf, senha } = req.body;
   try {
-    const { data: aluno } = await supabase.from('alunos').select('id, nome_completo').eq('cpf', cpf).single();
+    const { data: aluno } = await supabase.from('alunos').select('id, nome_completo, senha').eq('cpf', cpf).single();
     if (!aluno) return res.status(404).json({ erro: "CPF não encontrado." });
+// Se o aluno ainda não tem senha (cadastro antigo), define a senha digitada agora como a oficial
+if (!aluno.senha) {
+      const hash = await bcrypt.hash(senha, 10);
+      await supabase.from('alunos').update({ senha: hash }).eq('id', aluno.id);
+    } else {
+      // Se já tem senha, verifica se a digitada bate
+      const senhaCorreta = await bcrypt.compare(senha, aluno.senha);
+      if (!senhaCorreta) return res.status(401).json({ erro: "Senha incorreta." });
+    }
     const { data: matricula } = await supabase.from('matriculas_estudos').select('id, segmento, turma').eq('aluno_id', aluno.id).eq('status', 'ativa').single();
     if (!matricula) return res.status(404).json({ erro: "Nenhuma matrícula ativa." });
     return res.json({ aluno: { aluno_id: aluno.id, nome: aluno.nome_completo, matricula_id: matricula.id, segmento: matricula.segmento, turma: matricula.turma } });
@@ -348,10 +358,13 @@ app.get('/api/admin/catalogo/:segmento', verificarToken, async (req, res) => {
 });
 
 app.post('/api/admin/cadastrar-aluno', verificarToken, async (req, res) => {
-  const { nome_completo, cpf, email, telefone_whatsapp, segmento, turma, habilidades_dispensadas } = req.body;
+  const { nome_completo, cpf, email, telefone_whatsapp, segmento, turma, habilidades_dispensadas, senha } = req.body;
   if (!nome_completo || !cpf || !segmento || !turma) return res.status(400).json({ erro: "Campos obrigatórios faltando." });
   try {
-    const { data: aluno, error: errAluno } = await supabase.from('alunos').insert({ nome_completo, cpf, email, telefone_whatsapp }).select().single();
+// Criptografa a senha (se não enviarem, usa o CPF como padrão)
+    const senhaHash = await bcrypt.hash(senha || cpf, 10);
+    
+    const { data: aluno, error: errAluno } = await supabase.from('alunos').insert({ nome_completo, cpf, email, telefone_whatsapp, senha: senhaHash }).select().single();
     if (errAluno) {
       if (errAluno.code === '23505') return res.status(400).json({ erro: "CPF já cadastrado." });
       throw errAluno;
@@ -427,16 +440,69 @@ app.get('/api/admin/alertas', verificarToken, async (req, res) => {
 app.post('/api/admin/alertas/:id/enviar', verificarToken, async (req, res) => {
   const { id } = req.params;
   try {
-    const { data: alerta, error: errAlerta } = await supabase.from('alertas_coordenacao').select(`id, mensagem_original, matriculas_estudos (alunos (nome_completo, email))`).eq('id', id).single();
+    const { data: alerta, error: errAlerta } = await supabase
+      .from('alertas_coordenacao')
+      .select(`id, tipo, mensagem_original, matriculas_estudos (alunos (nome_completo, email))`)
+      .eq('id', id)
+      .single();
+
     if (errAlerta || !alerta) throw new Error("Alerta não encontrado.");
+    
     const aluno = alerta.matriculas_estudos.alunos;
-    const mensagem = alerta.mensagem_original;
-    if (aluno.email && process.env.GMAIL_USER) {
-      try { await transporter.sendMail({ from: `"Tutor Nova EJA" <${process.env.GMAIL_USER}>`, to: aluno.email, subject: 'Senti sua falta!', html: `<p>${mensagem}</p>` }); } catch (e) { console.error(e); }
+    const nomeAluno = aluno.nome_completo.split(' ')[0]; // Pega só o primeiro nome
+    const tipo = alerta.tipo;
+
+    let assunto = '';
+    let html = '';
+
+    // Personaliza o e-mail com base no tipo de alerta
+    if (tipo === 'apto_certificacao') {
+      assunto = `🏆 Parabéns! Você está apto à certificação - Nova EJA`;
+      html = `
+        <p>Olá, <strong>${nomeAluno}</strong>!</p>
+        <p>Temos uma excelente notícia: você atingiu a nota mínima em todas as competências necessárias e está <strong>apto à certificação</strong> da Nova EJA!</p>
+        <p>A coordenação já foi notificada e entrará em contato em breve com os próximos passos para a emissão do seu certificado.</p>
+        <p>Parabéns pelo esforço e dedicação! 🚀</p>
+      `;
+    } else if (tipo === 'atividade_refazer_limite' || tipo === 'mural_refazer_limite') {
+      assunto = `⚠️ Vamos conversar sobre seus estudos? - Nova EJA`;
+      html = `
+        <p>Olá, <strong>${nomeAluno}</strong>!</p>
+        <p>Notamos que você encontrou algumas dificuldades em uma das atividades/murais e atingiu o limite de tentativas.</p>
+        <p>Não se preocupe, isso é normal! Seu coordenador gostaria de conversar com você para ajudar a destravar esse conteúdo.</p>
+        <p>Em breve entraremos em contato. Estamos aqui para ajudar você a vencer essa etapa! 💪</p>
+      `;
+    } else {
+      // Fallback: Aluno inativo
+      assunto = `👋 Sentimos sua falta! - Tutor IA Nova EJA`;
+      html = `
+        <p>Olá, <strong>${nomeAluno}</strong>!</p>
+        <p>Percebemos que você não tem acessado a plataforma nos últimos dias. Sabia que o Tutor IA está disponível 24h por dia para tirar suas dúvidas?</p>
+        <p>Que tal dar uma pausa no que você está fazendo e retomar seus estudos de onde parou? Seu progresso está esperando por você!</p>
+        <p>Acesse: <a href="https://tutor-nova-eja.vercel.app/">Tutor IA Nova EJA</a></p>
+        <p>Conte com a gente! 🚀</p>
+      `;
     }
+
+    if (aluno.email && process.env.GMAIL_USER) {
+      try { 
+        await transporter.sendMail({ 
+          from: `"Tutor Nova EJA" <${process.env.GMAIL_USER}>`, 
+          to: aluno.email, 
+          subject: assunto, 
+          html: html 
+        }); 
+      } catch (e) { console.error("Erro ao enviar email:", e); }
+    }
+
+    // Marca o alerta como resolvido
     await supabase.from('alertas_coordenacao').update({ status: 'resolvido' }).eq('id', id);
-    return res.json({ mensagem: "Processado." });
-  } catch (error) { return res.status(500).json({ erro: "Erro." }); }
+    
+    return res.json({ mensagem: "E-mail disparado com sucesso." });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ erro: "Erro ao processar o alerta." });
+  }
 });
 
 // =====================================================================
