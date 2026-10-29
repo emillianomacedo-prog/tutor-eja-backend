@@ -485,40 +485,42 @@ app.get('/api/respostas/:aluno_id', async (req, res) => {
 });
 
 // ============================================================
-// CONSULTAR BOLETIM DO ALUNO (NOVO)
+// CONSULTAR BOLETIM DO ALUNO (CORRIGIDO)
 // ============================================================
 app.get('/api/boletim/:aluno_id', async (req, res) => {
     try {
         const { aluno_id } = req.params;
 
-        // Busca as respostas do aluno com os dados da atividade
-        const { data: respostas, error } = await supabase
+        // 1. Busca as respostas do aluno
+        const { data: respostas, error: errorRespostas } = await supabase
             .from('respostas_atividades')
-            .select(`
-                id,
-                nota,
-                status,
-                created_at,
-                atividades (
-                    area,
-                    etapa,
-                    competencia,
-                    habilidade_codigo,
-                    enunciado
-                )
-            `)
+            .select('*')
             .eq('aluno_id', aluno_id)
             .order('created_at', { ascending: false });
 
-        if (error) throw error;
+        if (errorRespostas) throw errorRespostas;
 
-        // Calcula a média geral (apenas das atividades corrigidas)
-        const atividadesCorrigidas = respostas.filter(r => r.nota !== null);
+        // 2. Para cada resposta, busca os dados da atividade correspondente
+        const respostasCompletas = await Promise.all(respostas.map(async (resp) => {
+            const { data: atividade, error: errorAtv } = await supabase
+                .from('atividades')
+                .select('area, etapa, competencia, habilidade_codigo, enunciado')
+                .eq('id', resp.atividade_id)
+                .single();
+            
+            return {
+                ...resp,
+                atividades: atividade || {} // Se não achar a atividade, retorna vazio
+            };
+        }));
+
+        // 3. Calcula a média geral (apenas das atividades corrigidas)
+        const atividadesCorrigidas = respostasCompletas.filter(r => r.nota !== null && r.nota !== undefined);
         const mediaGeral = atividadesCorrigidas.length > 0 
-            ? (atividadesCorrigidas.reduce((acc, r) => acc + r.nota, 0) / atividadesCorrigidas.length).toFixed(1)
+            ? (atividadesCorrigidas.reduce((acc, r) => acc + Number(r.nota), 0) / atividadesCorrigidas.length).toFixed(1)
             : 0;
 
-        res.json({ respostas, mediaGeral });
+        res.json({ respostas: respostasCompletas, mediaGeral });
     } catch (err) {
         console.error('Erro ao buscar boletim:', err);
         res.status(500).json({ error: 'Erro ao buscar dados do boletim.' });
