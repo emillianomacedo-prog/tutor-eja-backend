@@ -151,7 +151,6 @@ app.post('/api/login-professor', async (req, res) => {
             return res.status(400).json({ error: 'E-mail e senha são obrigatórios.' });
         }
 
-        // Busca o professor pelo e-mail
         const { data: professor, error } = await supabase
             .from('professores')
             .select('*')
@@ -163,13 +162,11 @@ app.post('/api/login-professor', async (req, res) => {
             return res.status(401).json({ error: 'E-mail ou senha inválidos.' });
         }
 
-        // Verifica a senha usando bcrypt
         const senhaValida = await bcrypt.compare(senha, professor.senha_hash);
         if (!senhaValida) {
             return res.status(401).json({ error: 'E-mail ou senha inválidos.' });
         }
 
-        // Retorna os dados do professor (sem a senha)
         return res.json({
             success: true,
             professor: { 
@@ -328,11 +325,10 @@ app.delete('/api/murais/:id', async (req, res) => {
 });
 
 // ============================================================
-// ATIVIDADES - CRUD (ATUALIZADO COM CONTAGEM DE RESPOSTAS)
+// ATIVIDADES - CRUD
 // ============================================================
 app.get('/api/atividades', async (req, res) => {
     try {
-        // Busca as atividades e traz a contagem de respostas atreladas a ela
         const { data, error } = await supabase
             .from('atividades')
             .select(`
@@ -344,7 +340,6 @@ app.get('/api/atividades', async (req, res) => {
 
         if (error) throw error;
 
-        // Formata o retorno para deixar a contagem acessível no frontend (ex: atividade.total_respostas)
         const atividadesFormatadas = data.map(atv => ({
             ...atv,
             total_respostas: atv.respostas_atividades[0]?.count || 0
@@ -373,10 +368,11 @@ app.get('/api/atividades/:id', async (req, res) => {
     }
 });
 
-// CRIAR ATIVIDADE (com imagem_url opcional)
+// CRIAR ATIVIDADE (Atualizado: com etapa, sem rubrica, alternativas em JSON)
 app.post('/api/atividades', async (req, res) => {
     try {
         const {
+            etapa, // NOVO
             competencia,
             habilidade_codigo,
             area,
@@ -384,7 +380,6 @@ app.post('/api/atividades', async (req, res) => {
             enunciado,
             alternativas,
             gabarito,
-            rubrica_ia,
             imagem_url
         } = req.body;
 
@@ -395,6 +390,7 @@ app.post('/api/atividades', async (req, res) => {
         const { data, error } = await supabase
             .from('atividades')
             .insert([{
+                etapa, // NOVO
                 competencia,
                 habilidade_codigo,
                 area,
@@ -402,7 +398,6 @@ app.post('/api/atividades', async (req, res) => {
                 enunciado,
                 alternativas,
                 gabarito,
-                rubrica_ia,
                 imagem_url: imagem_url || null,
                 ativa: true
             }])
@@ -421,6 +416,7 @@ app.put('/api/atividades/:id', async (req, res) => {
     try {
         const { id } = req.params;
         const {
+            etapa,
             competencia,
             habilidade_codigo,
             area,
@@ -428,7 +424,6 @@ app.put('/api/atividades/:id', async (req, res) => {
             enunciado,
             alternativas,
             gabarito,
-            rubrica_ia,
             imagem_url,
             ativa
         } = req.body;
@@ -436,6 +431,7 @@ app.put('/api/atividades/:id', async (req, res) => {
         const { data, error } = await supabase
             .from('atividades')
             .update({
+                etapa,
                 competencia,
                 habilidade_codigo,
                 area,
@@ -443,7 +439,6 @@ app.put('/api/atividades/:id', async (req, res) => {
                 enunciado,
                 alternativas,
                 gabarito,
-                rubrica_ia,
                 imagem_url,
                 ativa
             })
@@ -474,17 +469,49 @@ app.delete('/api/atividades/:id', async (req, res) => {
 // ============================================================
 // RESPOSTAS DE ATIVIDADES
 // ============================================================
+
+// ROTA: Aluno responde atividade (Correção automática se for objetiva)
 app.post('/api/respostas', async (req, res) => {
     try {
-        const { atividade_id, aluno_id, resposta, correta } = req.body;
+        const { atividade_id, aluno_id, resposta } = req.body;
         if (!atividade_id || !aluno_id) {
             return res.status(400).json({ error: 'atividade_id e aluno_id são obrigatórios.' });
         }
+
+        // Busca a atividade para saber o tipo e o gabarito
+        const { data: atividade, error: errorAtv } = await supabase
+            .from('atividades')
+            .select('tipo, gabarito')
+            .eq('id', atividade_id)
+            .single();
+            
+        if (errorAtv) throw errorAtv;
+
+        let correta = null;
+        let status = 'pendente';
+        let nota = null;
+
+        // Se for objetiva, corrige na hora
+        if (atividade.tipo === 'objetiva') {
+            correta = (resposta === atividade.gabarito);
+            nota = correta ? 100 : 0;
+            status = correta ? 'corrigida' : 'refazer';
+        }
+        // Se for subjetiva, fica pendente até o professor lançar a nota
+
         const { data, error } = await supabase
             .from('respostas_atividades')
-            .insert([{ atividade_id, aluno_id, resposta, correta }])
+            .insert([{ 
+                atividade_id, 
+                aluno_id, 
+                resposta, 
+                correta, 
+                nota, 
+                status 
+            }])
             .select()
             .single();
+
         if (error) throw error;
         res.status(201).json(data);
     } catch (err) {
@@ -493,6 +520,39 @@ app.post('/api/respostas', async (req, res) => {
     }
 });
 
+// ROTA: Professor lança nota de atividade subjetiva
+app.put('/api/respostas/:id/corrigir', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { nota } = req.body;
+
+        if (nota === undefined) {
+            return res.status(400).json({ error: 'A nota é obrigatória.' });
+        }
+
+        // REGRA DE NEGÓCIO: Nota abaixo de 60 = refazer
+        const status = nota >= 60 ? 'corrigida' : 'refazer';
+
+        const { data, error } = await supabase
+            .from('respostas_atividades')
+            .update({ 
+                nota: nota, 
+                status: status,
+                correta: nota >= 60 // Define se acertou ou não para estatísticas
+            })
+            .eq('id', id)
+            .select()
+            .single();
+
+        if (error) throw error;
+        res.json({ success: true, status: status, data });
+    } catch (err) {
+        console.error('Erro ao corrigir resposta:', err);
+        res.status(500).json({ error: 'Erro ao salvar correção.' });
+    }
+});
+
+// ROTA: Listar respostas de um aluno
 app.get('/api/respostas/:aluno_id', async (req, res) => {
     try {
         const { aluno_id } = req.params;
