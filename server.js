@@ -142,7 +142,7 @@ app.post('/api/login', async (req, res) => {
 });
 
 // ============================================================
-// AUTENTICAÇÃO DOS PROFESSORES (NOVO)
+// AUTENTICAÇÃO DOS PROFESSORES
 // ============================================================
 app.post('/api/login-professor', async (req, res) => {
     try {
@@ -328,17 +328,29 @@ app.delete('/api/murais/:id', async (req, res) => {
 });
 
 // ============================================================
-// ATIVIDADES - CRUD
+// ATIVIDADES - CRUD (ATUALIZADO COM CONTAGEM DE RESPOSTAS)
 // ============================================================
 app.get('/api/atividades', async (req, res) => {
     try {
+        // Busca as atividades e traz a contagem de respostas atreladas a ela
         const { data, error } = await supabase
             .from('atividades')
-            .select('*')
+            .select(`
+                *,
+                respostas_atividades (count)
+            `)
             .eq('ativa', true)
             .order('id', { ascending: false });
+
         if (error) throw error;
-        res.json(data);
+
+        // Formata o retorno para deixar a contagem acessível no frontend (ex: atividade.total_respostas)
+        const atividadesFormatadas = data.map(atv => ({
+            ...atv,
+            total_respostas: atv.respostas_atividades[0]?.count || 0
+        }));
+
+        res.json(atividadesFormatadas);
     } catch (err) {
         console.error('Erro GET /api/atividades:', err);
         res.status(500).json({ error: 'Erro ao listar atividades.' });
