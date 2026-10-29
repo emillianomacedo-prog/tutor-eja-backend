@@ -8,7 +8,7 @@ const cors = require('cors');
 const bcrypt = require('bcryptjs');
 const { createClient } = require('@supabase/supabase-js');
 const multer = require('multer');
-const nodemailer = require('nodemailer'); // NOVO: Importação do Nodemailer
+const nodemailer = require('nodemailer');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -41,13 +41,13 @@ const supabase = createClient(supabaseUrl, supabaseServiceKey);
 // ============================================================
 const transporter = nodemailer.createTransport({
     host: 'smtp.gmail.com',
-    port: 465,
-    secure: true, // <-- Faltava esta vírgula aqui!
+    port: 587,
+    secure: false, // true para 465, false para 587
     auth: {
         user: process.env.EMAIL_USER,
         pass: process.env.EMAIL_PASS
     },
-    connectionTimeout: 10000 // 10 segundos
+    connectionTimeout: 10000
 });
 
 // ============================================================
@@ -485,6 +485,47 @@ app.get('/api/respostas/:aluno_id', async (req, res) => {
 });
 
 // ============================================================
+// CONSULTAR BOLETIM DO ALUNO (NOVO)
+// ============================================================
+app.get('/api/boletim/:aluno_id', async (req, res) => {
+    try {
+        const { aluno_id } = req.params;
+
+        // Busca as respostas do aluno com os dados da atividade
+        const { data: respostas, error } = await supabase
+            .from('respostas_atividades')
+            .select(`
+                id,
+                nota,
+                status,
+                created_at,
+                atividades (
+                    area,
+                    etapa,
+                    competencia,
+                    habilidade_codigo,
+                    enunciado
+                )
+            `)
+            .eq('aluno_id', aluno_id)
+            .order('created_at', { ascending: false });
+
+        if (error) throw error;
+
+        // Calcula a média geral (apenas das atividades corrigidas)
+        const atividadesCorrigidas = respostas.filter(r => r.nota !== null);
+        const mediaGeral = atividadesCorrigidas.length > 0 
+            ? (atividadesCorrigidas.reduce((acc, r) => acc + r.nota, 0) / atividadesCorrigidas.length).toFixed(1)
+            : 0;
+
+        res.json({ respostas, mediaGeral });
+    } catch (err) {
+        console.error('Erro ao buscar boletim:', err);
+        res.status(500).json({ error: 'Erro ao buscar dados do boletim.' });
+    }
+});
+
+// ============================================================
 // CATÁLOGO DE HABILIDADES
 // ============================================================
 app.get('/api/habilidades', async (req, res) => {
@@ -594,7 +635,6 @@ app.post('/api/busca-ativa/registrar', async (req, res) => {
                     `
                 };
                 
-                // Envia o e-mail de verdade
                 await transporter.sendMail(mailOptions);
                 console.log(`✅ E-mail enviado com sucesso para ${aluno_email}`);
             }
