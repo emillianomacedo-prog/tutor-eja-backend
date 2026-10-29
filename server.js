@@ -124,24 +124,44 @@ app.put('/api/alunos/:id', async (req, res) => {
 app.get('/api/habilidades-por-etapa', async (req, res) => {
     try {
         const { etapa } = req.query;
-        const termo = etapa === 'Ensino Médio' ? 'Médio' : 'Fundamental';
-        const { data: habilidades, error } = await supabase.from('catalogo_habilidades').select('*').ilike('segmento', `%${termo}%`);
+        
+        // Define o termo de busca
+        const termo = etapa === 'Ensino Médio' ? 'medio' : 'fundamental';
+
+        // Busca TUDO do catálogo (para evitar erros de digitação no banco)
+        const { data: habilidades, error } = await supabase.from('catalogo_habilidades').select('*');
         if (error) throw error;
 
+        // Normaliza a string (remove acentos, deixa minúsculo)
+        const normalizar = (str) => (str || '').normalize('NFD').replace(/[\u0300-\u036f]/g, "").toLowerCase();
+
+        // Filtra no JavaScript (mais seguro)
+        const habilidadesFiltradas = habilidades.filter(h => 
+            normalizar(h.segmento).includes(termo)
+        );
+
+        // Agrupa por Área e Competência para o frontend
         const agrupado = {};
-        habilidades.forEach(h => {
+        habilidadesFiltradas.forEach(h => {
             if (!agrupado[h.area]) agrupado[h.area] = {};
             if (!agrupado[h.area][h.competencia]) agrupado[h.area][h.competencia] = [];
             
-            // Remove a sigla da competência do código da habilidade para ficar apenas H1, H2...
             let codigoLimpo = h.habilidade_codigo;
             if (codigoLimpo.startsWith(h.competencia)) {
                 codigoLimpo = codigoLimpo.replace(h.competencia, ''); 
             }
-            agrupado[h.area][h.competencia].push({ original: h.habilidade_codigo, exibicao: codigoLimpo });
+            
+            agrupado[h.area][h.competencia].push({ 
+                original: h.habilidade_codigo, 
+                exibicao: codigoLimpo 
+            });
         });
+        
         res.json(agrupado);
-    } catch (err) { res.status(500).json({ error: 'Erro ao buscar habilidades.' }); }
+    } catch (err) { 
+        console.error('Erro habilidades:', err);
+        res.status(500).json({ error: 'Erro ao buscar habilidades.' }); 
+    }
 });
 
 // ============================================================
