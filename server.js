@@ -8,6 +8,7 @@ const cors = require('cors');
 const bcrypt = require('bcryptjs');
 const { createClient } = require('@supabase/supabase-js');
 const multer = require('multer');
+const nodemailer = require('nodemailer'); // NOVO: Importação do Nodemailer
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -34,6 +35,19 @@ if (!supabaseUrl || !supabaseServiceKey) {
 }
 
 const supabase = createClient(supabaseUrl, supabaseServiceKey);
+
+// ============================================================
+// CONFIGURAÇÃO NODEMAILER (E-MAIL)
+// ============================================================
+const transporter = nodemailer.createTransport({
+    host: 'smtp.gmail.com',
+    port: 465,
+    secure: true,
+    auth: {
+        user: process.env.EMAIL_USER, // Ex: emillianomacedo@fiepb.org.br
+        pass: process.env.EMAIL_PASS  // Senha de app (sem espaços)
+    }
+});
 
 // ============================================================
 // CONFIGURAÇÃO MULTER
@@ -500,7 +514,7 @@ async function verificarAlunosInativos() {
         if (error) throw error;
 
         if (alunosInativos.length === 0) {
-            return { success: true, mensagem: 'Nenhum aluno inativo.', enviados: 0 };
+            return { success: true, enviados: 0 };
         }
 
         const mensagensEnviadas = alunosInativos.map(aluno => {
@@ -511,15 +525,14 @@ async function verificarAlunosInativos() {
             let numeroLimpo = (aluno.telefone_whatsapp || '').replace(/\D/g, ''); 
             if (numeroLimpo.length === 10 || numeroLimpo.length === 11) numeroLimpo = '55' + numeroLimpo;
 
-            const mensagemTexto = 
+            const textoWpp = 
                 `Olá *${aluno.nome_completo}*, notamos que *você não acessa a plataforma há ${diasInativo} dias*. Vamos retomar seus estudos?\n\n` +
-                `🎓 *Acesse a plataforma:* https://tutor-nova-eja.vercel.app\n` +
+                `🎓 *Acesse:* https://tutor-nova-eja.vercel.app\n` +
                 `👤 *Login:* ${aluno.email}\n` +
                 `🔑 *Senha:* Sesi@1234\n\n` +
-                `💡 *Tutorial rápido:* Acesse a tela inicial para ver o passo a passo.\n\n` +
-                `Estamos aqui para ajudar!`;
+                `💡 *Tutorial:* Acesse a tela inicial para ver o passo a passo.`;
 
-            const linkWhatsApp = `https://wa.me/${numeroLimpo}?text=${encodeURIComponent(mensagemTexto)}`;
+            const linkWhatsApp = `https://wa.me/${numeroLimpo}?text=${encodeURIComponent(textoWpp)}`;
 
             return {
                 aluno_id: aluno.id,
@@ -527,16 +540,12 @@ async function verificarAlunosInativos() {
                 email: aluno.email,
                 telefone: aluno.telefone_whatsapp,
                 link_whatsapp: linkWhatsApp,
-                mensagem_texto: mensagemTexto
+                mensagem_texto: textoWpp,
+                dias_inativo: diasInativo
             };
         });
 
-        return { 
-            success: true, 
-            enviados: alunosInativos.length,
-            detalhes: mensagensEnviadas
-        };
-
+        return { success: true, enviados: alunosInativos.length, detalhes: mensagensEnviadas };
     } catch (err) {
         console.error('Erro na rotina de inativos:', err);
         throw err;
@@ -553,24 +562,55 @@ app.get('/api/admin/testar-notificacoes', async (req, res) => {
 });
 
 // ============================================================
-// HISTÓRICO DE BUSCA ATIVA (RELATÓRIOS)
+// HISTÓRICO DE BUSCA ATIVA E ENVIO DE E-MAIL
 // ============================================================
 app.post('/api/busca-ativa/registrar', async (req, res) => {
     try {
-        const { aluno_id, mensagem_enviada } = req.body;
+        const { aluno_id, mensagem_enviada, canal, aluno_email, aluno_nome, dias_inativo } = req.body;
         if (!aluno_id) return res.status(400).json({ error: 'O ID do aluno é obrigatório.' });
 
+        // 1. Se o canal for e-mail, dispara o e-mail real
+        if (canal === 'Email') {
+            if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
+                console.warn('⚠️ Credenciais de e-mail não configuradas no Render.');
+            } else {
+                const mailOptions = {
+                    from: `"Tutor IA Nova EJA" <${process.env.EMAIL_USER}>`,
+                    to: aluno_email,
+                    subject: `Sentimos sua falta, ${aluno_nome}! Vamos estudar?`,
+                    html: `
+                        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; color: #333;">
+                            <h2 style="color: #1e3a8a;">Olá, ${aluno_nome}!</h2>
+                            <p>Notamos que <strong>você não acessa a plataforma há ${dias_inativo} dias</strong>. Estamos com saudades e queremos te ajudar a retomar seus estudos!</p>
+                            <p>Clique no botão abaixo para acessar o sistema:</p>
+                            <a href="https://tutor-nova-eja.vercel.app" style="display: inline-block; background-color: #1e3a8a; color: #fff; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: bold; margin: 16px 0;">Acessar Plataforma</a>
+                            <p><strong>Login:</strong> ${aluno_email}</p>
+                            <p><strong>Senha:</strong> Sesi@1234</p>
+                            <p>Qualquer dúvida, estamos à disposição.</p>
+                            <hr style="border: none; border-top: 1px solid #eee; margin: 20px 0;" />
+                            <p style="font-size: 12px; color: #888;">SESI - Serviço Social da Indústria - Nova EJA</p>
+                        </div>
+                    `
+                };
+                
+                // Envia o e-mail de verdade
+                await transporter.sendMail(mailOptions);
+                console.log(`✅ E-mail enviado com sucesso para ${aluno_email}`);
+            }
+        }
+
+        // 2. Registra no banco de dados (tanto para WhatsApp quanto para E-mail)
         const { data, error } = await supabase
             .from('historico_busca_ativa')
-            .insert([{ aluno_id, mensagem_enviada, canal: 'WhatsApp' }])
+            .insert([{ aluno_id, mensagem_enviada, canal: canal || 'WhatsApp' }])
             .select()
             .single();
 
         if (error) throw error;
         res.status(201).json(data);
     } catch (err) {
-        console.error('Erro ao registrar busca ativa:', err);
-        res.status(500).json({ error: 'Erro ao registrar o contato.' });
+        console.error('Erro ao registrar/enviar busca ativa:', err);
+        res.status(500).json({ error: 'Erro ao processar o contato.' });
     }
 });
 
