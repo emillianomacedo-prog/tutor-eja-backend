@@ -200,45 +200,52 @@ app.get('/api/murais', async (req, res) => {
 // ============================================================
 app.get('/api/aluno/:matricula_id/habilidades', async (req, res) => {
     try {
-        // Pega o segmento que o frontend enviou (fundamental ou medio)
-        const { segmento } = req.query; 
+        const { segmento } = req.query;
         
-        let query = supabase.from('catalogo_habilidades').select('*');
-        
-        // Se o segmento foi enviado, filtra no banco. 
-        // (Ajuste o nome da coluna 'etapa' se no seu banco ela se chamar 'segmento')
-        if (segmento) {
-            // Mapeia 'medio' para 'Médio' ou 'Ensino Médio', dependendo de como está no seu banco
-            const dbEtapa = segmento === 'medio' ? 'Médio' : 'Fundamental';
-            query = query.ilike('etapa', `%${dbEtapa}%`); 
-        }
+        // 1. Busca TODAS as habilidades do banco de uma vez
+        const { data: habilidades, error } = await supabase
+            .from('catalogo_habilidades')
+            .select('*');
 
-        const { data: habilidades, error } = await query;
         if (error) throw error;
 
-        // Como o banco não ordena "H1, H2, H10" corretamente apenas com string, fazemos no JS:
-        const formatadas = habilidades.map(h => ({
+        // 2. Filtra no JavaScript (mais seguro que SQL para esse caso)
+        let habilidadesFiltradas = habilidades;
+
+        if (segmento) {
+            const termo = segmento.toLowerCase(); // 'medio' ou 'fundamental'
+            habilidadesFiltradas = habilidades.filter(h => {
+                const dbSeg = (h.segmento || '').toLowerCase();
+                // Verifica se o termo ('medio') está dentro do texto do banco ('ensino medio')
+                return dbSeg.includes(termo) || (termo === 'medio' && dbSeg.includes('médio'));
+            });
+        }
+
+        // 3. Formata os dados para o frontend
+        const formatadas = habilidadesFiltradas.map(h => ({
             area: h.area, 
             competencia: h.competencia || 'Geral', 
-            habilidade_codigo: h.codigo || h.habilidade_codigo, 
+            habilidade_codigo: h.habilidade_codigo, 
             descricao: h.descricao || 'Descrição não cadastrada.'
         }));
 
-        // Função para extrair o número e ordenar C1, C2... H1, H2...
+        // 4. Ordena numericamente (C1, C2 e H1, H2, H10)
         const extrairNumero = (str) => {
             if (!str) return 0;
-            const match = str.match(/\d+/);
+            const match = str.match(/\d+/); // Pega o primeiro número que encontrar
             return match ? parseInt(match[0]) : 0;
         };
 
         formatadas.sort((a, b) => {
-            // 1º Ordena por Área (A-Z)
+            // Primeiro: Área (A-Z)
             if (a.area !== b.area) return a.area.localeCompare(b.area);
-            // 2º Ordena por Competência (C1, C2...)
+            
+            // Segundo: Competência (C1 antes de C2)
             const compA = extrairNumero(a.competencia);
             const compB = extrairNumero(b.competencia);
             if (compA !== compB) return compA - compB;
-            // 3º Ordena por Habilidade (H1, H2, H10...)
+            
+            // Terceiro: Habilidade (H1 antes de H2, H10 no fim)
             const habA = extrairNumero(a.habilidade_codigo);
             const habB = extrairNumero(b.habilidade_codigo);
             return habA - habB;
@@ -247,7 +254,7 @@ app.get('/api/aluno/:matricula_id/habilidades', async (req, res) => {
         res.json(formatadas);
     } catch (err) { 
         console.error('Erro GET habilidades:', err);
-        res.status(500).json({ erro: err.message }); 
+        res.status(500).json({ erro: 'Erro ao listar habilidades.' }); 
     }
 });
 
