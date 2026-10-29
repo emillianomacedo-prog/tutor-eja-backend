@@ -155,33 +155,34 @@ app.post('/api/atividades/:id/responder', async (req, res) => {
 });
 
 // ============================================================
-// MURAIS (Ajustado para o frontend)
+// MURAIS (Ajustado para a estrutura real do banco)
 // ============================================================
 app.get('/api/murais', async (req, res) => {
     try {
         const { area } = req.query;
-        let query = supabase.from('murais').select('*');
+        let query = supabase.from('murais').select('*').eq('ativo', true); // Garante que só pega os ativos
         
-        // Mapeando os nomes das áreas do banco para o frontend
+        // Filtro por área (o frontend envia 'ciencias_humanas', o banco pode ter 'Ciências Humanas')
         if (area) {
-            // O frontend envia 'ciencias_humanas', o banco pode ter 'Ciências Humanas' ou 'humanas'
             let dbArea = area;
             if (area === 'ciencias_humanas') dbArea = 'Ciências Humanas';
             if (area === 'ciencias_natureza') dbArea = 'Ciências da Natureza';
+            if (area === 'linguagens') dbArea = 'Linguagens';
+            if (area === 'matematica') dbArea = 'Matemática';
             
-            query = query.ilike('area', `%${dbArea}%`); // Busca flexível
+            query = query.ilike('area', `%${dbArea}%`);
         }
         
         const { data: murais, error } = await query;
         if (error) throw error;
 
+        // Formata para o frontend (murais.js espera texto_base e status)
         const formatados = murais.map(m => ({
             id: m.id, 
             titulo: m.titulo, 
             area: m.area, 
             competencia: m.competencia || 'Geral',
-            // Aqui está o segredo: mapear a coluna 'conteudo' para 'texto_base'
-            texto_base: m.conteudo || m.texto_base || 'Conteúdo não encontrado.', 
+            texto_base: m.texto_base, // <-- Usando a coluna correta do seu banco
             status: 'INICIAR', 
             nota_ia: null, 
             feedback_ia: null
@@ -189,35 +190,38 @@ app.get('/api/murais', async (req, res) => {
         
         res.json({ murais: formatados });
     } catch (err) { 
+        console.error('Erro GET /api/murais:', err);
         res.status(500).json({ erro: err.message }); 
     }
 });
 
 // ============================================================
-// HABILIDADES (Ajustado para o frontend)
+// HABILIDADES (Ordenado por Competência)
 // ============================================================
 app.get('/api/aluno/:matricula_id/habilidades', async (req, res) => {
     try {
         const { data: habilidades, error } = await supabase
             .from('catalogo_habilidades')
             .select('*')
-            .order('area');
-            
+            .order('area', { ascending: true })
+            .order('competencia', { ascending: true }); // Ordem crescente: C1, C2, C3...
+
         if (error) throw error;
 
         const formatadas = habilidades.map(h => ({
             area: h.area, 
             competencia: h.competencia || 'Geral', 
-            // Aqui está o segredo: mapear a coluna 'codigo' para 'habilidade_codigo'
             habilidade_codigo: h.codigo || h.habilidade_codigo, 
             descricao: h.descricao || 'Descrição não cadastrada.'
         }));
         
         res.json(formatadas);
     } catch (err) { 
+        console.error('Erro GET habilidades:', err);
         res.status(500).json({ erro: err.message }); 
     }
 });
+
 app.get('/api/boletim', async (req, res) => {
     try {
         const { aluno_id } = req.query;
