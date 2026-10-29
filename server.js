@@ -179,6 +179,49 @@ app.post('/api/login-professor', async (req, res) => {
 });
 
 // ============================================================
+// AUTENTICAÇÃO DO ALUNO (NOVO)
+// ============================================================
+app.post('/api/login-aluno', async (req, res) => {
+    try {
+        const { cpf, senha } = req.body;
+        if (!cpf || !senha) return res.status(400).json({ error: 'CPF e senha são obrigatórios.' });
+
+        // Busca o aluno pelo CPF
+        const { data: aluno, error } = await supabase
+            .from('alunos')
+            .select('*')
+            .eq('cpf', cpf)
+            .maybeSingle();
+
+        if (error) throw error;
+        if (!aluno) return res.status(401).json({ error: 'CPF ou senha inválidos.' });
+
+        // Verifica a senha (a coluna no banco se chama 'senha')
+        const senhaValida = await bcrypt.compare(senha, aluno.senha);
+        if (!senhaValida) return res.status(401).json({ error: 'CPF ou senha inválidos.' });
+
+        // Atualiza o último acesso do aluno para o sistema de busca ativa
+        await supabase
+            .from('alunos')
+            .update({ ultimo_acesso: new Date().toISOString() })
+            .eq('id', aluno.id);
+
+        return res.json({
+            success: true,
+            aluno: { 
+                id: aluno.id, 
+                nome: aluno.nome_completo, 
+                turma: aluno.turma,
+                cpf: aluno.cpf
+            }
+        });
+    } catch (err) {
+        console.error('Erro /api/login-aluno:', err);
+        return res.status(500).json({ error: 'Erro interno no login.' });
+    }
+});
+
+// ============================================================
 // CHAT COM IA
 // ============================================================
 app.post('/api/chat', async (req, res) => {
@@ -354,6 +397,44 @@ app.get('/api/atividades/:id', async (req, res) => {
     }
 });
 
+// ATIVIDADES DO ALUNO (BUSCAR E JUNTAR COM RESPOSTAS)
+app.get('/api/atividades-aluno/:aluno_id', async (req, res) => {
+    try {
+        const { aluno_id } = req.params;
+
+        // Busca todas as atividades ativas
+        const { data: atividades, error: errAtv } = await supabase
+            .from('atividades')
+            .select('*')
+            .eq('ativa', true)
+            .order('id', { ascending: false });
+
+        if (errAtv) throw errAtv;
+
+        // Busca as respostas deste aluno
+        const { data: respostas, error: errResp } = await supabase
+            .from('respostas_atividades')
+            .select('*')
+            .eq('aluno_id', aluno_id);
+
+        if (errResp) throw errResp;
+
+        // Junta as atividades com as respostas (se houver)
+        const atividadesComStatus = atividades.map(atv => {
+            const resposta = respostas.find(r => r.atividade_id === atv.id);
+            return {
+                ...atv,
+                resposta_aluno: resposta || null
+            };
+        });
+
+        res.json(atividadesComStatus);
+    } catch (err) {
+        console.error('Erro ao buscar atividades do aluno:', err);
+        res.status(500).json({ error: 'Erro ao buscar atividades.' });
+    }
+});
+
 app.post('/api/atividades', async (req, res) => {
     try {
         const { etapa, competencia, habilidade_codigo, area, tipo, enunciado, alternativas, gabarito, imagem_url } = req.body;
@@ -431,11 +512,33 @@ app.post('/api/respostas', async (req, res) => {
             status = correta ? 'corrigida' : 'refazer';
         }
 
-        const { data, error } = await supabase
+        // Verifica se o aluno já respondeu essa atividade (para atualizar em vez de duplicar)
+        const { data: respostaExistente } = await supabase
             .from('respostas_atividades')
-            .insert([{ atividade_id, aluno_id, resposta, correta, nota, status }])
-            .select()
-            .single();
+            .select('id')
+            .eq('atividade_id', atividade_id)
+            .eq('aluno_id', aluno_id)
+            .maybeSingle();
+
+        let data, error;
+        if (respostaExistente) {
+            const result = await supabase
+                .from('respostas_atividades')
+                .update({ resposta, correta, nota, status })
+                .eq('id', respostaExistente.id)
+                .select()
+                .single();
+            data = result.data;
+            error = result.error;
+        } else {
+            const result = await supabase
+                .from('respostas_atividades')
+                .insert([{ atividade_id, aluno_id, resposta, correta, nota, status }])
+                .select()
+                .single();
+            data = result.data;
+            error = result.error;
+        }
 
         if (error) throw error;
         res.status(201).json(data);
@@ -491,7 +594,6 @@ app.get('/api/boletim/:aluno_id', async (req, res) => {
     try {
         const { aluno_id } = req.params;
 
-        // 1. Busca as respostas do aluno
         const { data: respostas, error: errorRespostas } = await supabase
             .from('respostas_atividades')
             .select('*')
@@ -500,7 +602,6 @@ app.get('/api/boletim/:aluno_id', async (req, res) => {
 
         if (errorRespostas) throw errorRespostas;
 
-        // 2. Busca os dados de cada atividade para juntar
         const respostasCompletas = await Promise.all(respostas.map(async (resp) => {
             const { data: atividade } = await supabase
                 .from('atividades')
@@ -514,11 +615,9 @@ app.get('/api/boletim/:aluno_id', async (req, res) => {
             };
         }));
 
-        // 3. Agrupa por Área do Conhecimento
         const boletimPorArea = {};
 
         respostasCompletas.forEach(resp => {
-            // Se a atividade não tiver área definida, joga em "Outras Áreas"
             const area = (resp.atividades && resp.atividades.area) ? resp.atividades.area : 'Outras Áreas';
             
             if (!boletimPorArea[area]) {
@@ -531,14 +630,12 @@ app.get('/api/boletim/:aluno_id', async (req, res) => {
 
             boletimPorArea[area].atividades.push(resp);
 
-            // Só entra no cálculo da média se tiver nota
             if (resp.nota !== null && resp.nota !== undefined) {
                 boletimPorArea[area].somaNotas += Number(resp.nota);
                 boletimPorArea[area].qtdCorrigidas += 1;
             }
         });
 
-        // 4. Calcula médias por área e média geral
         let somaTodasNotas = 0;
         let totalCorrigidasGeral = 0;
 
@@ -655,7 +752,6 @@ app.post('/api/busca-ativa/registrar', async (req, res) => {
         const { aluno_id, mensagem_enviada, canal, aluno_email, aluno_nome, dias_inativo } = req.body;
         if (!aluno_id) return res.status(400).json({ error: 'O ID do aluno é obrigatório.' });
 
-        // 1. Se o canal for e-mail, dispara o e-mail real
         if (canal === 'Email') {
             if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
                 console.warn('⚠️ Credenciais de e-mail não configuradas no Render.');
@@ -684,7 +780,6 @@ app.post('/api/busca-ativa/registrar', async (req, res) => {
             }
         }
 
-        // 2. Registra no banco de dados (tanto para WhatsApp quanto para E-mail)
         const { data, error } = await supabase
             .from('historico_busca_ativa')
             .insert([{ aluno_id, mensagem_enviada, canal: canal || 'WhatsApp' }])
