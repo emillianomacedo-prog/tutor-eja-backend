@@ -119,7 +119,7 @@ app.put('/api/alunos/:id', async (req, res) => {
 });
 
 // ============================================================
-// HABILIDADES PARA O CADASTRO (POR ETAPA - ORDENADO)
+// HABILIDADES PARA O CADASTRO (POR ETAPA - ORDENADO CORRETAMENTE)
 // ============================================================
 app.get('/api/habilidades-por-etapa', async (req, res) => {
     try {
@@ -135,18 +135,22 @@ app.get('/api/habilidades-por-etapa', async (req, res) => {
             normalizar(h.segmento).includes(termo)
         );
 
-        const extrairNumero = (str) => {
-            if (!str) return 0;
-            const match = str.match(/\d+/);
-            return match ? parseInt(match[0]) : 0;
+        // Função para extrair TODOS os números da string
+        const extrairNumeros = (str) => {
+            if (!str) return [0, 0];
+            const matches = str.match(/\d+/g);
+            if (!matches) return [0, 0];
+            return [parseInt(matches[0] || 0), parseInt(matches[1] || 0)];
         };
 
+        // Agrupa por Área e Competência
         const agrupado = {};
         habilidadesFiltradas.forEach(h => {
             if (!agrupado[h.area]) agrupado[h.area] = {};
             if (!agrupado[h.area][h.competencia]) agrupado[h.area][h.competencia] = [];
             
             let codigoLimpo = h.habilidade_codigo;
+            // Tira a sigla da competência do texto exibido (ex: C1H1 vira H1)
             if (codigoLimpo.startsWith(h.competencia)) {
                 codigoLimpo = codigoLimpo.replace(h.competencia, ''); 
             }
@@ -163,15 +167,26 @@ app.get('/api/habilidades-por-etapa', async (req, res) => {
 
         areasOrdenadas.forEach(area => {
             agrupadoOrdenado[area] = {};
+            
+            // Ordena as competências (C1 antes de C2)
             const competenciasOrdenadas = Object.keys(agrupado[area]).sort((a, b) => {
-                return extrairNumero(a) - extrairNumero(b);
+                return extrairNumeros(a)[0] - extrairNumeros(b)[0];
             });
 
             competenciasOrdenadas.forEach(comp => {
                 const habs = agrupado[area][comp];
+                
+                // Ordena as habilidades garantindo que H10 venha depois de H9
                 habs.sort((a, b) => {
-                    return extrairNumero(a.original) - extrairNumero(b.original);
+                    const numsA = extrairNumeros(a.original);
+                    const numsB = extrairNumeros(b.original);
+                    
+                    // Se o número da competência for diferente, ordena por ele
+                    if (numsA[0] !== numsB[0]) return numsA[0] - numsB[0];
+                    // Se for a mesma competência, ordena pelo número da habilidade
+                    return numsA[1] - numsB[1];
                 });
+                
                 agrupadoOrdenado[area][comp] = habs;
             });
         });
