@@ -119,7 +119,7 @@ app.put('/api/alunos/:id', async (req, res) => {
 });
 
 // ============================================================
-// HABILIDADES PARA O CADASTRO (POR ETAPA - ORDENADO CORRETAMENTE)
+// HABILIDADES PARA O CADASTRO (POR ETAPA - ORDENADO)
 // ============================================================
 app.get('/api/habilidades-por-etapa', async (req, res) => {
     try {
@@ -135,22 +135,18 @@ app.get('/api/habilidades-por-etapa', async (req, res) => {
             normalizar(h.segmento).includes(termo)
         );
 
-        // Função para extrair TODOS os números da string
-        const extrairNumeros = (str) => {
-            if (!str) return [0, 0];
-            const matches = str.match(/\d+/g);
-            if (!matches) return [0, 0];
-            return [parseInt(matches[0] || 0), parseInt(matches[1] || 0)];
+        const extrairNumero = (str) => {
+            if (!str) return 0;
+            const match = str.match(/\d+/);
+            return match ? parseInt(match[0]) : 0;
         };
 
-        // Agrupa por Área e Competência
         const agrupado = {};
         habilidadesFiltradas.forEach(h => {
             if (!agrupado[h.area]) agrupado[h.area] = {};
             if (!agrupado[h.area][h.competencia]) agrupado[h.area][h.competencia] = [];
             
             let codigoLimpo = h.habilidade_codigo;
-            // Tira a sigla da competência do texto exibido (ex: C1H1 vira H1)
             if (codigoLimpo.startsWith(h.competencia)) {
                 codigoLimpo = codigoLimpo.replace(h.competencia, ''); 
             }
@@ -161,32 +157,22 @@ app.get('/api/habilidades-por-etapa', async (req, res) => {
             });
         });
 
-        // Ordena Áreas, Competências e Habilidades
         const agrupadoOrdenado = {};
         const areasOrdenadas = Object.keys(agrupado).sort();
 
         areasOrdenadas.forEach(area => {
             agrupadoOrdenado[area] = {};
-            
-            // Ordena as competências (C1 antes de C2)
             const competenciasOrdenadas = Object.keys(agrupado[area]).sort((a, b) => {
-                return extrairNumeros(a)[0] - extrairNumeros(b)[0];
+                return extrairNumero(a) - extrairNumero(b);
             });
 
             competenciasOrdenadas.forEach(comp => {
                 const habs = agrupado[area][comp];
-                
-                // Ordena as habilidades garantindo que H10 venha depois de H9
                 habs.sort((a, b) => {
-                    const numsA = extrairNumeros(a.original);
-                    const numsB = extrairNumeros(b.original);
-                    
-                    // Se o número da competência for diferente, ordena por ele
-                    if (numsA[0] !== numsB[0]) return numsA[0] - numsB[0];
-                    // Se for a mesma competência, ordena pelo número da habilidade
-                    return numsA[1] - numsB[1];
+                    const numA = extrairNumero(a.original);
+                    const numB = extrairNumero(b.original);
+                    return numA - numB;
                 });
-                
                 agrupadoOrdenado[area][comp] = habs;
             });
         });
@@ -275,56 +261,33 @@ app.get('/api/atividades', async (req, res) => {
     } catch (err) { res.status(500).json({ error: 'Erro.' }); }
 });
 
-// ============================================================
-// CRIAR ATIVIDADE (CORRIGIDO)
-// ============================================================
 app.post('/api/atividades', async (req, res) => {
     try {
-        const { 
-            etapa, 
-            competencia, 
-            habilidade_codigo, 
-            area, 
-            tipo, 
-            enunciado, 
-            alternativas, 
-            gabarito, 
-            imagem_url 
-        } = req.body;
-        
-        if (!enunciado) {
-            return res.status(400).json({ error: 'Enunciado é obrigatório.' });
-        }
+        const { data, error } = await supabase.from('atividades').insert([{ ...req.body, ativa: true }]).select().single();
+        if (error) throw error; res.status(201).json(data);
+    } catch (err) { res.status(500).json({ error: 'Erro.' }); }
+});
 
-        // Garante que alternativas vazio seja enviado como null para o banco
-        const alternativasParaSalvar = (tipo === 'objetiva' && alternativas) ? alternativas : null;
+app.put('/api/atividades/:id', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { etapa, competencia, habilidade_codigo, area, tipo, enunciado, alternativas, gabarito, imagem_url } = req.body;
 
         const { data, error } = await supabase
             .from('atividades')
-            .insert([{ 
-                etapa, 
-                competencia, 
-                habilidade_codigo, 
-                area, 
-                tipo, 
-                enunciado, 
-                alternativas: alternativasParaSalvar, 
+            .update({ 
+                etapa, competencia, habilidade_codigo, area, tipo, enunciado, 
+                alternativas: alternativas || null, 
                 gabarito: gabarito || null, 
-                imagem_url: imagem_url || null, 
-                ativa: true 
-            }])
-            .select()
-            .single();
+                imagem_url: imagem_url || null
+            })
+            .eq('id', id).select().single();
 
-        if (error) {
-            console.error('Erro Supabase ao criar atividade:', error);
-            throw error;
-        }
-        
-        res.status(201).json(data);
-    } catch (err) {
-        console.error('Erro POST /api/atividades:', err);
-        res.status(500).json({ error: err.message || 'Erro ao criar atividade.' });
+        if (error) throw error;
+        res.json(data);
+    } catch (err) { 
+        console.error('Erro PUT /api/atividades:', err);
+        res.status(500).json({ error: 'Erro ao atualizar atividade.' }); 
     }
 });
 
