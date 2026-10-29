@@ -119,28 +119,28 @@ app.put('/api/alunos/:id', async (req, res) => {
 });
 
 // ============================================================
-// HABILIDADES PARA O CADASTRO (POR ETAPA)
+// HABILIDADES PARA O CADASTRO (POR ETAPA - ORDENADO)
 // ============================================================
 app.get('/api/habilidades-por-etapa', async (req, res) => {
     try {
         const { etapa } = req.query;
-        
-        // Define o termo de busca
         const termo = etapa === 'Ensino Médio' ? 'medio' : 'fundamental';
 
-        // Busca TUDO do catálogo (para evitar erros de digitação no banco)
         const { data: habilidades, error } = await supabase.from('catalogo_habilidades').select('*');
         if (error) throw error;
 
-        // Normaliza a string (remove acentos, deixa minúsculo)
         const normalizar = (str) => (str || '').normalize('NFD').replace(/[\u0300-\u036f]/g, "").toLowerCase();
 
-        // Filtra no JavaScript (mais seguro)
         const habilidadesFiltradas = habilidades.filter(h => 
             normalizar(h.segmento).includes(termo)
         );
 
-        // Agrupa por Área e Competência para o frontend
+        const extrairNumero = (str) => {
+            if (!str) return 0;
+            const match = str.match(/\d+/);
+            return match ? parseInt(match[0]) : 0;
+        };
+
         const agrupado = {};
         habilidadesFiltradas.forEach(h => {
             if (!agrupado[h.area]) agrupado[h.area] = {};
@@ -156,8 +156,27 @@ app.get('/api/habilidades-por-etapa', async (req, res) => {
                 exibicao: codigoLimpo 
             });
         });
+
+        // Ordena Áreas, Competências e Habilidades
+        const agrupadoOrdenado = {};
+        const areasOrdenadas = Object.keys(agrupado).sort();
+
+        areasOrdenadas.forEach(area => {
+            agrupadoOrdenado[area] = {};
+            const competenciasOrdenadas = Object.keys(agrupado[area]).sort((a, b) => {
+                return extrairNumero(a) - extrairNumero(b);
+            });
+
+            competenciasOrdenadas.forEach(comp => {
+                const habs = agrupado[area][comp];
+                habs.sort((a, b) => {
+                    return extrairNumero(a.original) - extrairNumero(b.original);
+                });
+                agrupadoOrdenado[area][comp] = habs;
+            });
+        });
         
-        res.json(agrupado);
+        res.json(agrupadoOrdenado);
     } catch (err) { 
         console.error('Erro habilidades:', err);
         res.status(500).json({ error: 'Erro ao buscar habilidades.' }); 
