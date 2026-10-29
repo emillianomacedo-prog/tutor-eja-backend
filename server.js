@@ -41,11 +41,11 @@ const supabase = createClient(supabaseUrl, supabaseServiceKey);
 // ============================================================
 const transporter = nodemailer.createTransport({
     host: 'smtp.gmail.com',
-    port: 587,
+    port: 587, // Se for usar a opção 2, coloque 465
     secure: false,
     auth: {
-        user: process.env.emillianomacedo@fiepb.org.br, // Ex: emillianomacedo@fiepb.org.br
-        pass: process.env.ihemolccuwjqgvun  // Senha de app (sem espaços)
+        user: process.env.EMAIL_USER, // <--- CORRIJA AQUI (nome da variável)
+        pass: process.env.EMAIL_PASS  // <--- CORRIJA AQUI (nome da variável)
     }
     // Adicionar um timeout para não travar o servidor se a porta estiver bloqueada
     connectionTimeout: 10000 // 10 segundos
