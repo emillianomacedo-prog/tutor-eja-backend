@@ -132,7 +132,13 @@ app.get('/api/habilidades-por-etapa', async (req, res) => {
         habilidades.forEach(h => {
             if (!agrupado[h.area]) agrupado[h.area] = {};
             if (!agrupado[h.area][h.competencia]) agrupado[h.area][h.competencia] = [];
-            agrupado[h.area][h.competencia].push(h.habilidade_codigo);
+            
+            // Remove a sigla da competência do código da habilidade para ficar apenas H1, H2...
+            let codigoLimpo = h.habilidade_codigo;
+            if (codigoLimpo.startsWith(h.competencia)) {
+                codigoLimpo = codigoLimpo.replace(h.competencia, ''); 
+            }
+            agrupado[h.area][h.competencia].push({ original: h.habilidade_codigo, exibicao: codigoLimpo });
         });
         res.json(agrupado);
     } catch (err) { res.status(500).json({ error: 'Erro ao buscar habilidades.' }); }
