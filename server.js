@@ -1,7 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
-const bcrypt = require('bcryptjs'); // <--- NOVO IMPORT
+const bcrypt = require('bcryptjs');
 const { createClient } = require('@supabase/supabase-js');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const Groq = require('groq-sdk');
@@ -17,15 +17,9 @@ const geminiKeys = process.env.GEMINI_KEYS.split(',').map(k => k.trim());
 
 const transporter = nodemailer.createTransport({
   service: 'gmail',
-  auth: {
-    user: process.env.GMAIL_USER,
-    pass: process.env.GMAIL_APP_PASSWORD
-  }
+  auth: { user: process.env.GMAIL_USER, pass: process.env.GMAIL_APP_PASSWORD }
 });
 
-// =====================================================================
-// CONSTANTES DE NEGÓCIO
-// =====================================================================
 const NOTA_MINIMA = 60;
 const MAX_TENTATIVAS_ATIVIDADE = 3;
 const MAX_TENTATIVAS_MURAL = 5;
@@ -143,20 +137,6 @@ function parseJSONSeguro(raw) {
   }
 }
 
-async function avaliarAtividadeIA({ atividade, resposta, competencia, segmento }) {
-  if (atividade.tipo === 'objetiva') {
-    const acertou = String(resposta).trim().toLowerCase() === String(atividade.gabarito || '').trim().toLowerCase();
-    const nota = acertou ? 100 : 0;
-    return { nota, status_sugerido: nota >= NOTA_MINIMA ? 'FINALIZADA' : 'REFAZER', feedback: acertou ? 'Resposta correta! Muito bem.' : 'Resposta incorreta. Revise o conteúdo do livro e tente novamente.', pontos_fortes: acertou ? ['Alternativa correta'] : [], pontos_a_melhorar: acertou ? [] : ['Reveja o conteúdo da habilidade trabalhada'], corrigido_por: 'gabarito' };
-  }
-  const chunks = await buscarChunksRelevantes({ competencia, segmento, textoConsulta: `${atividade.enunciado}\n\n${resposta}`, limite: 5 });
-  const contexto = formatarChunksParaPrompt(chunks);
-  const prompt = `Você é o Tutor IA. Avalie a resposta. Nota 0-100. Mínima ${NOTA_MINIMA}. Abaixo = REFAZER. Acima = FINALIZADA. Competência: ${competencia}. Enunciado: ${atividade.enunciado}. RAG: ${contexto}. Resposta: """${resposta}""". Responda JSON: {"nota": <0-100>, "feedback": "<texto>", "pontos_fortes": [], "pontos_a_melhorar": []}`;
-  const raw = await chamarIAComJSON(prompt);
-  const parsed = parseJSONSeguro(raw);
-  return { ...parsed, status_sugerido: parsed.nota >= NOTA_MINIMA ? 'FINALIZADA' : 'REFAZER', corrigido_por: 'ia' };
-}
-
 async function mediarMuralIA({ mural, textoAluno, competencia, segmento }) {
   const chunks = await buscarChunksRelevantes({ competencia, segmento, textoConsulta: `${mural.texto_base}\n\n${textoAluno}`, limite: 5 });
   const contexto = formatarChunksParaPrompt(chunks);
@@ -185,36 +165,25 @@ async function verificarConclusao(aluno_id) {
     const { data: matricula } = await supabase.from('matriculas_estudos').select('id').eq('aluno_id', aluno_id).eq('status', 'ativa').maybeSingle();
     if (!matricula) return { apto: true, notificado: false, erro: 'sem matrícula ativa' };
     await supabase.from('alertas_coordenacao').insert({ matricula_id: matricula.id, tipo: 'apto_certificacao', mensagem_original: 'Aluno atingiu nota mínima em todas as competências.', status: 'pendente' });
-    const { data: coords } = await supabase.from('coordenadores').select('email').eq('papel', 'coordenador').limit(5);
-    const { data: aluno } = await supabase.from('alunos').select('nome_completo').eq('id', aluno_id).single();
-    if (coords && coords.length > 0 && process.env.GMAIL_USER) {
-      const emails = coords.map(c => c.email).filter(Boolean);
-      if (emails.length > 0) {
-        try { await transporter.sendMail({ from: `"Tutor IA" <${process.env.GMAIL_USER}>`, to: emails.join(','), subject: `✅ Aluno apto: ${aluno?.nome_completo}`, html: `<p>O aluno <strong>${aluno?.nome_completo}</strong> está apto.</p>` }); } catch (mailErr) { console.error('[conclusao] e-mail falhou:', mailErr.message); }
-      }
-    }
     CONCLUSAO_ENVIADA.set(aluno_id, Date.now());
     return { apto: true, notificado: true };
   } catch (err) { return { apto: false, erro: err.message }; }
 }
 
 // =====================================================================
-// ROTAS EXISTENTES
+// ROTAS DO ALUNO E LOGIN
 // =====================================================================
 
-// LOGIN ALUNO (Com Senha)
 app.post('/api/login', async (req, res) => {
   const { cpf, senha } = req.body;
   try {
     const { data: aluno } = await supabase.from('alunos').select('id, nome_completo, senha').eq('cpf', cpf).single();
     if (!aluno) return res.status(404).json({ erro: "CPF não encontrado." });
 
-    // Se o aluno ainda não tem senha (cadastro antigo), define a senha digitada agora como a oficial
     if (!aluno.senha) {
       const hash = await bcrypt.hash(senha, 10);
       await supabase.from('alunos').update({ senha: hash }).eq('id', aluno.id);
     } else {
-      // Se já tem senha, verifica se a digitada bate
       const senhaCorreta = await bcrypt.compare(senha, aluno.senha);
       if (!senhaCorreta) return res.status(401).json({ erro: "Senha incorreta." });
     }
@@ -225,13 +194,12 @@ app.post('/api/login', async (req, res) => {
   } catch (e) { return res.status(500).json({ erro: "Erro interno." }); }
 });
 
-// LOGIN COORDENADOR
 app.post('/api/admin/login', async (req, res) => {
   const { email, password } = req.body;
   try {
     const { data: authData, error: authError } = await supabase.auth.signInWithPassword({ email, password });
     if (authError) return res.status(401).json({ erro: "E-mail ou senha inválidos." });
-    return res.json({ mensagem: "Login realizado com sucesso", token: authData.session.access_token, nome: "Coordenador" });
+    return res.json({ mensagem: "Login realizado com sucesso", token: authData.session.access_token, nome: "Coordenador/Professor" });
   } catch (error) { return res.status(500).json({ erro: "Erro interno no login." }); }
 });
 
@@ -241,22 +209,175 @@ function verificarToken(req, res, next) {
   next();
 }
 
-// NOVA ROTA: Habilidades para a Tela de Livros
+// =====================================================================
+// ATIVIDADES (Aluno e Professor)
+// =====================================================================
+
+app.get('/api/atividades', async (req, res) => {
+  const { competencia, aluno_id } = req.query;
+  if (!competencia || !aluno_id) return res.status(400).json({ erro: 'competencia e aluno_id são obrigatórios' });
+  try {
+    const alunoIdReal = await resolverAlunoId(aluno_id);
+    if (!alunoIdReal) return res.status(404).json({ erro: 'Aluno não encontrado' });
+    
+    const { data: atividades, error } = await supabase.from('atividades')
+      .select('id, competencia, habilidade_codigo, area, tipo, enunciado, alternativas, pontuacao_max')
+      .eq('competencia', competencia).eq('ativa', true).order('created_at');
+    if (error) throw error;
+    if (!atividades || atividades.length === 0) return res.json({ atividades: [] });
+    
+    const ids = atividades.map(a => a.id);
+    const { data: respostas } = await supabase.from('respostas_atividades').select('atividade_id, status, nota, tentativas, feedback').eq('aluno_id', alunoIdReal).in('atividade_id', ids);
+    const mapa = Object.fromEntries((respostas || []).map(r => [r.atividade_id, r]));
+    
+    return res.json({ atividades: atividades.map(a => ({ ...a, status: mapa[a.id]?.status || 'INICIAR', nota: mapa[a.id]?.nota ?? null, tentativas: mapa[a.id]?.tentativas || 0, feedback: mapa[a.id]?.feedback || null })) });
+  } catch (err) { return res.status(500).json({ erro: 'Erro ao listar atividades', detalhe: err.message }); }
+});
+
+app.post('/api/atividades/:id/iniciar', async (req, res) => {
+  const { aluno_id } = req.body;
+  if (!aluno_id) return res.status(400).json({ erro: 'aluno_id é obrigatório' });
+  try {
+    const alunoIdReal = await resolverAlunoId(aluno_id);
+    if (!alunoIdReal) return res.status(404).json({ erro: 'Aluno não encontrado' });
+    const { data, error } = await supabase.from('respostas_atividades').upsert({ atividade_id: req.params.id, aluno_id: alunoIdReal, status: 'EM_ANDAMENTO' }, { onConflict: 'atividade_id,aluno_id', ignoreDuplicates: false }).select().single();
+    if (error) throw error;
+    return res.json({ resposta: data });
+  } catch (err) { return res.status(500).json({ erro: 'Erro ao iniciar atividade' }); }
+});
+
+app.patch('/api/atividades/:id/rascunho', async (req, res) => {
+  const { aluno_id, rascunho } = req.body;
+  if (!aluno_id) return res.status(400).json({ erro: 'aluno_id é obrigatório' });
+  try {
+    const alunoIdReal = await resolverAlunoId(aluno_id);
+    const { data, error } = await supabase.from('respostas_atividades').update({ rascunho }).eq('atividade_id', req.params.id).eq('aluno_id', alunoIdReal).select().single();
+    if (error) throw error;
+    return res.json({ resposta: data });
+  } catch (err) { return res.status(500).json({ erro: 'Erro ao salvar rascunho' }); }
+});
+
+// ALUNO RESPONDE (Avaliação do professor para subjetiva)
+app.post('/api/atividades/:id/responder', async (req, res) => {
+  const { aluno_id, resposta, segmento, matricula_id } = req.body;
+  if (!aluno_id || !resposta || !resposta.trim()) return res.status(400).json({ erro: 'aluno_id e resposta são obrigatórios' });
+  
+  try {
+    const alunoIdReal = await resolverAlunoId(aluno_id);
+    if (!alunoIdReal) return res.status(404).json({ erro: 'Aluno não encontrado' });
+    
+    const { data: atividade } = await supabase.from('atividades').select('*').eq('id', req.params.id).single();
+    if (!atividade) return res.status(404).json({ erro: 'Atividade não encontrada' });
+    
+    const { data: atual } = await supabase.from('respostas_atividades').select('tentativas, status').eq('atividade_id', req.params.id).eq('aluno_id', alunoIdReal).maybeSingle();
+    if (atual?.status === 'FINALIZADA' || atual?.status === 'AGUARDANDO_CORRECAO') return res.status(400).json({ erro: 'Atividade já finalizada ou em correção.' });
+    
+    const tentativas = (atual?.tentativas || 0) + 1;
+    
+    let nota = null;
+    let statusSugerido = 'AGUARDANDO_CORRECAO';
+    let feedback = 'Sua resposta foi enviada! O professor avaliará em breve.';
+    let corrigido_por = null;
+
+    if (atividade.tipo === 'objetiva') {
+      const acertou = String(resposta).trim().toLowerCase() === String(atividade.gabarito || '').trim().toLowerCase();
+      nota = acertou ? 100 : 0;
+      statusSugerido = nota >= 60 ? 'FINALIZADA' : 'REFAZER';
+      feedback = acertou ? 'Resposta correta! Muito bem.' : 'Resposta incorreta. Tente novamente.';
+      corrigido_por = 'gabarito';
+    }
+
+    const { data, error } = await supabase.from('respostas_atividades').upsert({
+      atividade_id: req.params.id, aluno_id: alunoIdReal, resposta: resposta.trim(), rascunho: null, 
+      nota: nota, feedback: feedback, status: statusSugerido, tentativas, 
+      corrigido_por: corrigido_por, 
+      corrigido_em: corrigido_por ? new Date().toISOString() : null, 
+      submetido_em: new Date().toISOString()
+    }, { onConflict: 'atividade_id,aluno_id', ignoreDuplicates: false }).select().single();
+    
+    if (error) throw error;
+
+    if (statusSugerido === 'AGUARDANDO_CORRECAO' && matricula_id) {
+      await supabase.from('alertas_coordenacao').insert({
+        matricula_id: matricula_id,
+        tipo: 'correcao_pendente',
+        mensagem_original: `Nova resposta subjetiva aguardando correção na atividade ${atividade.id}.`,
+        status: 'pendente'
+      });
+    }
+
+    return res.json({ resposta: data });
+  } catch (err) { return res.status(500).json({ erro: 'Erro ao enviar resposta' }); }
+});
+
+// CRIAR ATIVIDADE
+app.post('/api/atividades', verificarToken, async (req, res) => {
+  const { competencia, habilidade_codigo, area, tipo, enunciado, alternativas, gabarito, rubrica_ia } = req.body;
+  if (!competencia || !habilidade_codigo || !area || !tipo || !enunciado) return res.status(400).json({ erro: 'Campos obrigatórios faltando' });
+  if (tipo === 'objetiva' && (!alternativas || !gabarito)) return res.status(400).json({ erro: 'Objetiva exige alternativas e gabarito' });
+  try {
+    const { data, error } = await supabase.from('atividades').insert({ competencia, habilidade_codigo, area, tipo, enunciado, alternativas: alternativas || null, gabarito: gabarito || null, rubrica_ia: rubrica_ia || null }).select().single();
+    if (error) throw error;
+    return res.status(201).json({ atividade: data });
+  } catch (err) { return res.status(500).json({ erro: 'Erro ao criar atividade' }); }
+});
+
+// ROTAS DO PAINEL DO PROFESSOR
+app.get('/api/admin/correcoes-pendentes', verificarToken, async (req, res) => {
+  try {
+    const { data, error } = await supabase.from('respostas_atividades')
+      .select(`
+        id, resposta, atividade_id, 
+        atividades ( enunciado, habilidade_codigo, area ),
+        alunos ( nome_completo, cpf )
+      `)
+      .eq('status', 'AGUARDANDO_CORRECAO');
+      
+    if (error) throw error;
+    
+    // Formata a resposta para o frontend ficar simples de usar
+    const formatado = data.map(d => ({
+      resposta_id: d.id,
+      resposta: d.resposta,
+      enunciado: d.atividades.enunciado,
+      habilidade: d.atividades.habilidade_codigo,
+      aluno_nome: d.alunos.nome_completo,
+      aluno_cpf: d.alunos.cpf
+    }));
+    
+    return res.json(formatado);
+  } catch (error) { return res.status(500).json({ erro: "Erro ao buscar correções." }); }
+});
+
+app.post('/api/admin/corrigir-atividade/:resposta_id', verificarToken, async (req, res) => {
+  const { resposta_id } = req.params;
+  const { nota, feedback } = req.body;
+  if (nota < 0 || nota > 100) return res.status(400).json({ erro: 'Nota deve ser entre 0 e 100.' });
+  try {
+    const status = nota >= 60 ? 'FINALIZADA' : 'REFAZER';
+    const { data, error } = await supabase.from('respostas_atividades').update({
+      nota: nota, feedback: feedback, status: status, corrigido_por: 'professor', corrigido_em: new Date().toISOString()
+    }).eq('id', resposta_id).select().single();
+    if (error) throw error;
+    return res.json({ mensagem: 'Atividade corrigida!', resposta: data });
+  } catch (error) { return res.status(500).json({ erro: 'Erro ao corrigir atividade.' }); }
+});
+
+// =====================================================================
+// ROTAS DO SISTEMA (Murais, Chat, Cadastros, etc)
+// =====================================================================
+
 app.get('/api/aluno/:matricula_id/habilidades', async (req, res) => {
   const { matricula_id } = req.params;
   try {
     const { data: matricula } = await supabase.from('matriculas_estudos').select('segmento').eq('id', matricula_id).single();
     if (!matricula) return res.status(404).json({ erro: "Matrícula não encontrada." });
-
     const { data: catalogo, error: errCat } = await supabase.from('catalogo_habilidades').select('habilidade_codigo, area, competencia, descricao').eq('segmento', matricula.segmento).order('habilidade_codigo');
-    
     if (errCat) throw errCat;
-
     return res.json(catalogo);
   } catch (err) { return res.status(500).json({ erro: "Erro ao buscar habilidades." }); }
 });
 
-// PROGRESSO (MANTIDO)
 app.get('/api/aluno/:matricula_id/progresso', async (req, res) => {
   const { matricula_id } = req.params;
   try {
@@ -273,7 +394,6 @@ app.get('/api/aluno/:matricula_id/progresso', async (req, res) => {
   } catch (error) { return res.status(500).json({ erro: "Erro." }); }
 });
 
-// CHAT
 app.post('/api/chat', async (req, res) => {
   const { mensagemAluno, matricula_id, historico = [] } = req.body;
   try {
@@ -345,32 +465,21 @@ app.post('/api/chat', async (req, res) => {
   } catch (error) { return res.status(500).json({ erro: "Erro no chat." }); }
 });
 
-// =====================================================================
-// ROTAS DE ADMINISTRAÇÃO
-// =====================================================================
-
 app.get('/api/admin/catalogo/:segmento', verificarToken, async (req, res) => {
   const { segmento } = req.params;
   try {
-    const { data: catalogo, error } = await supabase.from('catalogo_habilidades').select('habilidade_codigo, area, descricao').eq('segmento', segmento).order('area', { ascending: true }).order('habilidade_codigo', { ascending: true });
+    const { data: catalogo, error } = await supabase.from('catalogo_habilidades').select('habilidade_codigo, competencia, area, descricao').eq('segmento', segmento).order('habilidade_codigo');
     if (error) throw error;
     return res.json(catalogo);
   } catch (error) { return res.status(500).json({ erro: "Erro ao buscar catálogo." }); }
 });
 
-// CADASTRAR ALUNO (Com Senha)
 app.post('/api/admin/cadastrar-aluno', verificarToken, async (req, res) => {
   const { nome_completo, cpf, email, telefone_whatsapp, segmento, turma, habilidades_dispensadas, senha } = req.body;
   if (!nome_completo || !cpf || !segmento || !turma) return res.status(400).json({ erro: "Campos obrigatórios faltando." });
-  
   try {
-    // Criptografa a senha (se não enviarem, usa o CPF como padrão)
     const senhaHash = await bcrypt.hash(senha || cpf, 10);
-
-    const { data: aluno, error: errAluno } = await supabase.from('alunos').insert({ 
-      nome_completo, cpf, email, telefone_whatsapp, senha: senhaHash 
-    }).select().single();
-    
+    const { data: aluno, error: errAluno } = await supabase.from('alunos').insert({ nome_completo, cpf, email, telefone_whatsapp, senha: senhaHash }).select().single();
     if (errAluno) {
       if (errAluno.code === '23505') return res.status(400).json({ erro: "CPF já cadastrado." });
       throw errAluno;
@@ -400,22 +509,19 @@ app.get('/api/admin/aluno/:matricula_id', verificarToken, async (req, res) => {
   } catch (error) { return res.status(500).json({ erro: "Erro ao buscar aluno." }); }
 });
 
-// EDITAR ALUNO (Com Senha Opcional)
 app.put('/api/admin/editar-aluno/:matricula_id', verificarToken, async (req, res) => {
   const { matricula_id } = req.params;
   const { nome_completo, email, telefone_whatsapp, turma, habilidades_dispensadas, senha } = req.body;
   try {
     const { data: matricula } = await supabase.from('matriculas_estudos').select('aluno_id, segmento').eq('id', matricula_id).single();
-    
     const dadosAtualizados = { nome_completo, email, telefone_whatsapp };
-    if (senha) {
-      dadosAtualizados.senha = await bcrypt.hash(senha, 10);
-    }
+    if (senha) dadosAtualizados.senha = await bcrypt.hash(senha, 10);
 
     await supabase.from('alunos').update(dadosAtualizados).eq('id', matricula.aluno_id);
     await supabase.from('matriculas_estudos').update({ turma }).eq('id', matricula_id);
     await supabase.from('habilidades_dispensadas').delete().eq('matricula_id', matricula_id);
     await supabase.from('habilidades_a_desenvolver').delete().eq('matricula_id', matricula_id);
+    
     const { data: catalogo } = await supabase.from('catalogo_habilidades').select('*').eq('segmento', matricula.segmento);
     const dispensadasSet = new Set((habilidades_dispensadas || []).map(h => `${h.codigo}_${h.area}`));
     if (habilidades_dispensadas && habilidades_dispensadas.length > 0) {
@@ -450,77 +556,39 @@ app.get('/api/admin/alertas', verificarToken, async (req, res) => {
   } catch (error) { return res.status(500).json({ erro: "Erro." }); }
 });
 
-// ENVIAR EMAIL DE ALERTA (Customizado)
 app.post('/api/admin/alertas/:id/enviar', verificarToken, async (req, res) => {
   const { id } = req.params;
   try {
-    const { data: alerta, error: errAlerta } = await supabase
-      .from('alertas_coordenacao')
-      .select(`id, tipo, mensagem_original, matriculas_estudos (alunos (nome_completo, email))`)
-      .eq('id', id)
-      .single();
-
+    const { data: alerta, error: errAlerta } = await supabase.from('alertas_coordenacao').select(`id, tipo, mensagem_original, matriculas_estudos (alunos (nome_completo, email))`).eq('id', id).single();
     if (errAlerta || !alerta) throw new Error("Alerta não encontrado.");
     
     const aluno = alerta.matriculas_estudos.alunos;
-    const nomeAluno = aluno.nome_completo.split(' ')[0]; // Pega só o primeiro nome
+    const nomeAluno = aluno.nome_completo.split(' ')[0];
     const tipo = alerta.tipo;
 
-    let assunto = '';
-    let html = '';
-
-    // Personaliza o e-mail com base no tipo de alerta
+    let assunto = '', html = '';
     if (tipo === 'apto_certificacao') {
       assunto = `🏆 Parabéns! Você está apto à certificação - Nova EJA`;
-      html = `
-        <p>Olá, <strong>${nomeAluno}</strong>!</p>
-        <p>Temos uma excelente notícia: você atingiu a nota mínima em todas as competências necessárias e está <strong>apto à certificação</strong> da Nova EJA!</p>
-        <p>A coordenação já foi notificada e entrará em contato em breve com os próximos passos para a emissão do seu certificado.</p>
-        <p>Parabéns pelo esforço e dedicação! 🚀</p>
-      `;
+      html = `<p>Olá, <strong>${nomeAluno}</strong>!</p><p>Você atingiu a nota mínima e está <strong>apto à certificação</strong>!</p>`;
     } else if (tipo === 'atividade_refazer_limite' || tipo === 'mural_refazer_limite') {
       assunto = `⚠️ Vamos conversar sobre seus estudos? - Nova EJA`;
-      html = `
-        <p>Olá, <strong>${nomeAluno}</strong>!</p>
-        <p>Notamos que você encontrou algumas dificuldades em uma das atividades/murais e atingiu o limite de tentativas.</p>
-        <p>Não se preocupe, isso é normal! Seu coordenador gostaria de conversar com você para ajudar a destravar esse conteúdo.</p>
-        <p>Em breve entraremos em contato. Estamos aqui para ajudar você a vencer essa etapa! 💪</p>
-      `;
+      html = `<p>Olá, <strong>${nomeAluno}</strong>!</p><p>Você atingiu o limite de tentativas em uma atividade. Seu coordenador quer conversar com você para ajudar!</p>`;
+    } else if (tipo === 'correcao_pendente') {
+      assunto = `📝 Sua atividade foi corrigida! - Nova EJA`;
+      html = `<p>Olá, <strong>${nomeAluno}</strong>!</p><p>Seu professor já corrigiu a sua atividade subjetiva. Acesse a plataforma para ver a sua nota e o feedback!</p>`;
     } else {
-      // Fallback: Aluno inativo
       assunto = `👋 Sentimos sua falta! - Tutor IA Nova EJA`;
-      html = `
-        <p>Olá, <strong>${nomeAluno}</strong>!</p>
-        <p>Percebemos que você não tem acessado a plataforma nos últimos dias. Sabia que o Tutor IA está disponível 24h por dia para tirar suas dúvidas?</p>
-        <p>Que tal dar uma pausa no que você está fazendo e retomar seus estudos de onde parou? Seu progresso está esperando por você!</p>
-        <p>Acesse: <a href="https://tutor-nova-eja.vercel.app/">Tutor IA Nova EJA</a></p>
-        <p>Conte com a gente! 🚀</p>
-      `;
+      html = `<p>Olá, <strong>${nomeAluno}</strong>!</p><p>Que tal retomar seus estudos hoje? Acesse a plataforma!</p>`;
     }
 
     if (aluno.email && process.env.GMAIL_USER) {
-      try { 
-        await transporter.sendMail({ 
-          from: `"Tutor Nova EJA" <${process.env.GMAIL_USER}>`, 
-          to: aluno.email, 
-          subject: assunto, 
-          html: html 
-        }); 
-      } catch (e) { console.error("Erro ao enviar email:", e); }
+      try { await transporter.sendMail({ from: `"Tutor Nova EJA" <${process.env.GMAIL_USER}>`, to: aluno.email, subject: assunto, html: html }); } catch (e) { console.error(e); }
     }
 
     await supabase.from('alertas_coordenacao').update({ status: 'resolvido' }).eq('id', id);
-    
-    return res.json({ mensagem: "E-mail disparado com sucesso." });
-  } catch (error) {
-    console.error(error);
-    return res.status(500).json({ erro: "Erro ao processar o alerta." });
-  }
+    return res.json({ mensagem: "Processado." });
+  } catch (error) { return res.status(500).json({ erro: "Erro." }); }
 });
-
-// =====================================================================
-// ROTAS NOVAS (40/40/20)
-// =====================================================================
 
 app.post('/api/finalizar-curso/:matricula_id', async (req, res) => {
   const { matricula_id } = req.params;
@@ -540,183 +608,88 @@ app.post('/api/finalizar-curso/:matricula_id', async (req, res) => {
   } catch (error) { return res.status(500).json({ erro: "Erro ao finalizar curso.", detalhes: error.message }); }
 });
 
-app.get('/api/atividades', async (req, res) => {
-  const { competencia, aluno_id } = req.query;
-  if (!competencia || !aluno_id) return res.status(400).json({ erro: 'competencia e aluno_id são obrigatórios' });
-  try {
-    const alunoIdReal = await resolverAlunoId(aluno_id);
-    if (!alunoIdReal) return res.status(404).json({ erro: 'Aluno não encontrado' });
-    const { data: atividades, error } = await supabase.from('atividades').select('id, competencia, area, tipo, enunciado, alternativas, pontuacao_max').eq('competencia', competencia).eq('ativa', true).order('created_at');
-    if (error) throw error;
-    if (!atividades || atividades.length === 0) return res.json({ atividades: [] });
-    const ids = atividades.map(a => a.id);
-    const { data: respostas } = await supabase.from('respostas_atividades').select('atividade_id, status, nota, tentativas, feedback').eq('aluno_id', alunoIdReal).in('atividade_id', ids);
-    const mapa = Object.fromEntries((respostas || []).map(r => [r.atividade_id, r]));
-    return res.json({ atividades: atividades.map(a => ({ ...a, status: mapa[a.id]?.status || 'INICIAR', nota: mapa[a.id]?.nota ?? null, tentativas: mapa[a.id]?.tentativas || 0, feedback: mapa[a.id]?.feedback || null })) });
-  } catch (err) { return res.status(500).json({ erro: 'Erro ao listar atividades', detalhe: err.message }); }
-});
-
-app.post('/api/atividades/:id/iniciar', async (req, res) => {
-  const { aluno_id } = req.body;
-  if (!aluno_id) return res.status(400).json({ erro: 'aluno_id é obrigatório' });
-  try {
-    const alunoIdReal = await resolverAlunoId(aluno_id);
-    if (!alunoIdReal) return res.status(404).json({ erro: 'Aluno não encontrado' });
-    const { data, error } = await supabase.from('respostas_atividades').upsert({ atividade_id: req.params.id, aluno_id: alunoIdReal, status: 'EM_ANDAMENTO' }, { onConflict: 'atividade_id,aluno_id', ignoreDuplicates: false }).select().single();
-    if (error) throw error;
-    return res.json({ resposta: data });
-  } catch (err) { return res.status(500).json({ erro: 'Erro ao iniciar atividade' }); }
-});
-
-app.patch('/api/atividades/:id/rascunho', async (req, res) => {
-  const { aluno_id, rascunho } = req.body;
-  if (!aluno_id) return res.status(400).json({ erro: 'aluno_id é obrigatório' });
-  try {
-    const alunoIdReal = await resolverAlunoId(aluno_id);
-    const { data, error } = await supabase.from('respostas_atividades').update({ rascunho }).eq('atividade_id', req.params.id).eq('aluno_id', alunoIdReal).select().single();
-    if (error) throw error;
-    return res.json({ resposta: data });
-  } catch (err) { return res.status(500).json({ erro: 'Erro ao salvar rascunho' }); }
-});
-
-app.post('/api/atividades/:id/responder', async (req, res) => {
-  const { aluno_id, resposta, segmento, matricula_id } = req.body;
-  if (!aluno_id || !resposta || !resposta.trim()) return res.status(400).json({ erro: 'aluno_id e resposta são obrigatórios' });
-  try {
-    const alunoIdReal = await resolverAlunoId(aluno_id);
-    if (!alunoIdReal) return res.status(404).json({ erro: 'Aluno não encontrado' });
-    const { data: atividade, error: errAtiv } = await supabase.from('atividades').select('*').eq('id', req.params.id).single();
-    if (errAtiv || !atividade) return res.status(404).json({ erro: 'Atividade não encontrada' });
-    const { data: atual } = await supabase.from('respostas_atividades').select('tentativas, status').eq('atividade_id', req.params.id).eq('aluno_id', alunoIdReal).maybeSingle();
-    if (atual?.status === 'FINALIZADA') return res.status(400).json({ erro: 'Atividade já finalizada.' });
-    const tentativas = (atual?.tentativas || 0) + 1;
-    if (tentativas > MAX_TENTATIVAS_ATIVIDADE) {
-      if (matricula_id) {
-        await supabase.from('alertas_coordenacao').insert({ matricula_id, tipo: 'atividade_refazer_limite', mensagem_original: `Aluno excedeu ${MAX_TENTATIVAS_ATIVIDADE} tentativas na atividade ${req.params.id}.`, status: 'pendente' });
-      }
-      return res.status(429).json({ erro: 'Limite de tentativas excedido. Coordenação foi notificada.' });
-    }
-    const resultado = await avaliarAtividadeIA({ atividade, resposta: resposta.trim(), competencia: atividade.competencia, segmento: segmento || 'medio' });
-    const { data, error } = await supabase.from('respostas_atividades').upsert({
-      atividade_id: req.params.id, aluno_id: alunoIdReal, resposta: resposta.trim(), rascunho: null, nota: resultado.nota, feedback: resultado.feedback, status: resultado.status_sugerido, tentativas, corrigido_por: resultado.corrigido_por, corrigido_em: new Date().toISOString(), submetido_em: new Date().toISOString()
-    }, { onConflict: 'atividade_id,aluno_id', ignoreDuplicates: false }).select().single();
-    if (error) throw error;
-    if (data.status === 'FINALIZADA') { try { await verificarConclusao(alunoIdReal); } catch (e) { console.warn(e.message); } }
-    return res.json({ resposta: data, resultado_ia: { pontos_fortes: resultado.pontos_fortes || [], pontos_a_melhorar: resultado.pontos_a_melhorar || [] } });
-  } catch (err) { return res.status(500).json({ erro: 'Erro ao avaliar resposta' }); }
-});
-
-app.post('/api/atividades', verificarToken, async (req, res) => {
-  const { competencia, area, tipo, enunciado, alternativas, gabarito, rubrica_ia } = req.body;
-  if (!competencia || !area || !tipo || !enunciado) return res.status(400).json({ erro: 'Campos obrigatórios faltando' });
-  if (tipo === 'objetiva' && (!alternativas || !gabarito)) return res.status(400).json({ erro: 'Objetiva exige alternativas e gabarito' });
-  try {
-    const { data, error } = await supabase.from('atividades').insert({ competencia, area, tipo, enunciado, alternativas: alternativas || null, gabarito: gabarito || null, rubrica_ia: rubrica_ia || null }).select().single();
-    if (error) throw error;
-    return res.status(201).json({ atividade: data });
-  } catch (err) { return res.status(500).json({ erro: 'Erro ao criar atividade' }); }
-});
-
 app.get('/api/murais', async (req, res) => {
   const { area, aluno_id } = req.query;
   if (!aluno_id) return res.status(400).json({ erro: 'aluno_id é obrigatório' });
   try {
     const alunoIdReal = await resolverAlunoId(aluno_id);
-    if (!alunoIdReal) return res.status(404).json({ erro: 'Aluno não encontrado' });
     let q = supabase.from('murais').select('id, titulo, texto_base, area, competencia').eq('ativo', true);
     if (area) q = q.eq('area', area);
-    const { data: murais, error } = await q.order('created_at');
-    if (error) throw error;
+    const { data: murais } = await q.order('created_at');
     if (!murais || murais.length === 0) return res.json({ murais: [] });
+    
     const ids = murais.map(m => m.id);
     const { data: postagens } = await supabase.from('postagens_murais').select('mural_id, status, nota_ia, tentativas, feedback_ia').eq('aluno_id', alunoIdReal).in('mural_id', ids);
     const mapa = Object.fromEntries((postagens || []).map(p => [p.mural_id, p]));
+    
     return res.json({ murais: murais.map(m => ({ ...m, status: mapa[m.id]?.status || 'INICIAR', nota_ia: mapa[m.id]?.nota_ia ?? null, tentativas: mapa[m.id]?.tentativas || 0, feedback_ia: mapa[m.id]?.feedback_ia || null })) });
   } catch (err) { return res.status(500).json({ erro: 'Erro ao listar murais' }); }
 });
 
 app.post('/api/murais/:id/iniciar', async (req, res) => {
   const { aluno_id } = req.body;
-  if (!aluno_id) return res.status(400).json({ erro: 'aluno_id é obrigatório' });
   try {
     const alunoIdReal = await resolverAlunoId(aluno_id);
     const { data, error } = await supabase.from('postagens_murais').upsert({ mural_id: req.params.id, aluno_id: alunoIdReal, status: 'EM_ANDAMENTO' }, { onConflict: 'mural_id,aluno_id', ignoreDuplicates: false }).select().single();
-    if (error) throw error;
     return res.json({ postagem: data });
-  } catch (err) { return res.status(500).json({ erro: 'Erro ao iniciar mural' }); }
-});
-
-app.patch('/api/murais/:id/rascunho', async (req, res) => {
-  const { aluno_id, rascunho } = req.body;
-  if (!aluno_id) return res.status(400).json({ erro: 'aluno_id é obrigatório' });
-  try {
-    const alunoIdReal = await resolverAlunoId(aluno_id);
-    const { data, error } = await supabase.from('postagens_murais').update({ rascunho }).eq('mural_id', req.params.id).eq('aluno_id', alunoIdReal).select().single();
-    if (error) throw error;
-    return res.json({ postagem: data });
-  } catch (err) { return res.status(500).json({ erro: 'Erro ao salvar rascunho' }); }
+  } catch (err) { return res.status(500).json({ erro: 'Erro' }); }
 });
 
 app.post('/api/murais/:id/mediar', async (req, res) => {
   const { aluno_id, texto, segmento } = req.body;
-  if (!aluno_id || !texto || !texto.trim()) return res.status(400).json({ erro: 'aluno_id e texto são obrigatórios' });
+  if (!aluno_id || !texto) return res.status(400).json({ erro: 'Faltam dados' });
   try {
     const alunoIdReal = await resolverAlunoId(aluno_id);
     const { data: mural } = await supabase.from('murais').select('*').eq('id', req.params.id).single();
-    if (!mural) return res.status(404).json({ erro: 'Mural não encontrado' });
     const resultado = await mediarMuralIA({ mural, textoAluno: texto.trim(), competencia: mural.competencia, segmento: segmento || 'medio' });
     await supabase.from('postagens_murais').upsert({ mural_id: mural.id, aluno_id: alunoIdReal, texto: texto.trim(), status: 'EM_ANDAMENTO' }, { onConflict: 'mural_id,aluno_id', ignoreDuplicates: false });
     return res.json({ mediacao: resultado });
-  } catch (err) { return res.status(500).json({ erro: 'Erro na mediação' }); }
+  } catch (err) { return res.status(500).json({ erro: 'Erro' }); }
 });
 
 app.post('/api/murais/:id/avaliar', async (req, res) => {
   const { aluno_id, texto, segmento, matricula_id } = req.body;
-  if (!aluno_id || !texto || !texto.trim()) return res.status(400).json({ erro: 'aluno_id e texto são obrigatórios' });
+  if (!aluno_id || !texto) return res.status(400).json({ erro: 'Faltam dados' });
   try {
     const alunoIdReal = await resolverAlunoId(aluno_id);
     const { data: mural } = await supabase.from('murais').select('*').eq('id', req.params.id).single();
-    if (!mural) return res.status(404).json({ erro: 'Mural não encontrado' });
     const { data: atual } = await supabase.from('postagens_murais').select('tentativas, status').eq('mural_id', mural.id).eq('aluno_id', alunoIdReal).maybeSingle();
     if (atual?.status === 'FINALIZADA') return res.status(400).json({ erro: 'Mural já finalizado.' });
+    
     const tentativas = (atual?.tentativas || 0) + 1;
     if (tentativas > MAX_TENTATIVAS_MURAL) {
-      if (matricula_id) {
-        await supabase.from('alertas_coordenacao').insert({ matricula_id, tipo: 'mural_refazer_limite', mensagem_original: `Aluno excedeu ${MAX_TENTATIVAS_MURAL} tentativas no mural ${mural.id}.`, status: 'pendente' });
-      }
-      return res.status(429).json({ erro: 'Limite de tentativas excedido.' });
+      if (matricula_id) await supabase.from('alertas_coordenacao').insert({ matricula_id, tipo: 'mural_refazer_limite', mensagem_original: `Aluno excedeu tentativas no mural.`, status: 'pendente' });
+      return res.status(429).json({ erro: 'Limite excedido.' });
     }
+    
     const resultado = await avaliarMuralIA({ mural, textoAluno: texto.trim(), competencia: mural.competencia, segmento: segmento || 'medio' });
-    const { data, error } = await supabase.from('postagens_murais').upsert({
+    const { data } = await supabase.from('postagens_murais').upsert({
       mural_id: mural.id, aluno_id: alunoIdReal, texto: texto.trim(), rascunho: null, nota_ia: resultado.nota, feedback_ia: resultado.feedback, status: resultado.status_sugerido, tentativas, avaliado_em: new Date().toISOString(), submetido_em: new Date().toISOString()
     }, { onConflict: 'mural_id,aluno_id', ignoreDuplicates: false }).select().single();
-    if (error) throw error;
-    if (data.status === 'FINALIZADA') { try { await verificarConclusao(alunoIdReal); } catch (e) { console.warn(e.message); } }
+    
+    if (data.status === 'FINALIZADA') { try { await verificarConclusao(alunoIdReal); } catch (e) { } }
     return res.json({ postagem: data, resultado_ia: { pontos_fortes: resultado.pontos_fortes || [], pontos_a_melhorar: resultado.pontos_a_melhorar || [] } });
-  } catch (err) { return res.status(500).json({ erro: 'Erro na avaliação' }); }
+  } catch (err) { return res.status(500).json({ erro: 'Erro' }); }
 });
 
 app.post('/api/murais', verificarToken, async (req, res) => {
   const { titulo, texto_base, area, competencia, rubrica_ia } = req.body;
-  if (!titulo || !texto_base || !area) return res.status(400).json({ erro: 'Campos obrigatórios faltando' });
   try {
     const { data, error } = await supabase.from('murais').insert({ titulo, texto_base, area, competencia: competencia || null, rubrica_ia: rubrica_ia || null }).select().single();
     if (error) throw error;
     return res.status(201).json({ mural: data });
-  } catch (err) { return res.status(500).json({ erro: 'Erro ao criar mural' }); }
+  } catch (err) { return res.status(500).json({ erro: 'Erro' }); }
 });
 
 app.post('/api/oficinas', verificarToken, async (req, res) => {
   const { aluno_id, area, nota, data_oficina, observacao } = req.body;
-  if (!aluno_id || !area || nota == null) return res.status(400).json({ erro: 'aluno_id, area e nota são obrigatórios' });
-  if (nota < 0 || nota > 100) return res.status(400).json({ erro: 'Nota deve estar entre 0 e 100' });
   try {
     const alunoIdReal = await resolverAlunoId(aluno_id);
     const { data, error } = await supabase.from('oficinas_presenciais').upsert({ aluno_id: alunoIdReal, area, nota, data_oficina: data_oficina || null, observacao: observacao || null, updated_at: new Date().toISOString() }, { onConflict: 'aluno_id,area', ignoreDuplicates: false }).select().single();
     if (error) throw error;
-    try { await verificarConclusao(alunoIdReal); } catch (e) { console.warn(e.message); }
+    try { await verificarConclusao(alunoIdReal); } catch (e) { }
     return res.json({ oficina: data });
-  } catch (err) { return res.status(500).json({ erro: 'Erro ao lançar oficina' }); }
+  } catch (err) { return res.status(500).json({ erro: 'Erro' }); }
 });
 
 app.get('/api/oficinas/:aluno_id', verificarToken, async (req, res) => {
@@ -725,7 +698,7 @@ app.get('/api/oficinas/:aluno_id', verificarToken, async (req, res) => {
     const { data, error } = await supabase.from('oficinas_presenciais').select('*').eq('aluno_id', alunoIdReal).order('area');
     if (error) throw error;
     return res.json({ oficinas: data || [] });
-  } catch (err) { return res.status(500).json({ erro: 'Erro ao buscar oficinas' }); }
+  } catch (err) { return res.status(500).json({ erro: 'Erro' }); }
 });
 
 app.get('/api/boletim', async (req, res) => {
@@ -733,9 +706,8 @@ app.get('/api/boletim', async (req, res) => {
   if (!aluno_id) return res.status(400).json({ erro: 'aluno_id é obrigatório' });
   try {
     const alunoIdReal = await resolverAlunoId(aluno_id);
-    if (!alunoIdReal) return res.status(404).json({ erro: 'Aluno não encontrado' });
     const { data, error } = await supabase.rpc('verificar_aproveitamento', { p_aluno_id: alunoIdReal });
-    if (error) return res.status(500).json({ erro: 'Erro ao executar verificar_aproveitamento', detalhe: error.message, codigo: error.code });
+    if (error) return res.status(500).json({ erro: 'Erro no cálculo', detalhe: error.message });
     const apto = (data || []).length > 0 && data.every(c => c.apto_certificacao);
     const porArea = {};
     for (const c of data || []) {
@@ -743,26 +715,21 @@ app.get('/api/boletim', async (req, res) => {
       porArea[c.area].push(c);
     }
     return res.json({ competencias: data || [], por_area: porArea, apto_certificacao: apto, total_competencias: (data || []).length, total_aprovadas: (data || []).filter(c => c.aprovado_competencia).length });
-  } catch (err) { return res.status(500).json({ erro: 'Erro ao gerar boletim', detalhe: err.message }); }
+  } catch (err) { return res.status(500).json({ erro: 'Erro' }); }
 });
 
 app.get('/api/boletim/:aluno_id', verificarToken, async (req, res) => {
   const { aluno_id } = req.params;
   try {
     const alunoIdReal = await resolverAlunoId(aluno_id);
-    if (!alunoIdReal) return res.status(404).json({ erro: 'Aluno não encontrado' });
     const { data: aluno } = await supabase.from('alunos').select('id, nome_completo').eq('id', alunoIdReal).single();
     const { data: matricula } = await supabase.from('matriculas_estudos').select('segmento, turma').eq('aluno_id', alunoIdReal).eq('status', 'ativa').maybeSingle();
     const { data, error } = await supabase.rpc('verificar_aproveitamento', { p_aluno_id: alunoIdReal });
-    if (error) return res.status(500).json({ erro: 'Erro ao executar verificar_aproveitamento', detalhe: error.message, codigo: error.code });
     const apto = (data || []).length > 0 && data.every(c => c.apto_certificacao);
     return res.json({ aluno: { ...aluno, segmento: matricula?.segmento, turma: matricula?.turma }, competencias: data || [], apto_certificacao: apto, total_competencias: (data || []).length, total_aprovadas: (data || []).filter(c => c.aprovado_competencia).length });
-  } catch (err) { return res.status(500).json({ erro: 'Erro ao gerar boletim', detalhe: err.message }); }
+  } catch (err) { return res.status(500).json({ erro: 'Erro' }); }
 });
 
-// =====================================================================
-// HEALTHCHECK E START
-// =====================================================================
 app.get('/health', (req, res) => res.json({ status: 'healthy', uptime: process.uptime() }));
 
 const PORT = process.env.PORT || 3000;
