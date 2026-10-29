@@ -5,7 +5,7 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
-const bcrypt = require('bcryptjs');
+const bcrypt = require('bcryptjs'); // Trocado para bcryptjs (mais seguro no Render)
 const { createClient } = require('@supabase/supabase-js');
 const multer = require('multer');
 
@@ -16,7 +16,7 @@ const PORT = process.env.PORT || 3000;
 // MIDDLEWARES GLOBAIS
 // ============================================================
 app.use(cors({
-    origin: 'https://tutor-nova-eja.vercel.app', // ou '*' para testar
+    origin: process.env.FRONTEND_URL || '*', // Idealmente, defina a URL do Vercel no painel do Render
     credentials: true
 }));
 app.use(express.json({ limit: '10mb' }));
@@ -64,8 +64,7 @@ function gerarNomeArquivo(originalName) {
     return `questoes/${timestamp}-${random}.${ext}`;
 }
 
-// Middleware simples de autenticação por header (ajuste conforme seu esquema)
-// Se você usa JWT em cookie ou header Authorization, adapte aqui.
+// Middleware simples de autenticação por header
 function autenticarAdmin(req, res, next) {
     const token = req.headers['authorization']?.replace('Bearer ', '');
     if (!token || token !== process.env.ADMIN_TOKEN) {
@@ -129,9 +128,8 @@ app.post('/api/login', async (req, res) => {
             return res.status(400).json({ error: 'Email e senha são obrigatórios.' });
         }
 
-        // Exemplo: assumindo tabela "usuarios" ou "coordenadores"
         const { data: usuario, error } = await supabase
-            .from('usuarios')
+            .from('usuarios') // Ajuste o nome da tabela se necessário
             .select('*')
             .eq('email', email)
             .maybeSingle();
@@ -142,7 +140,6 @@ app.post('/api/login', async (req, res) => {
         const senhaValida = await bcrypt.compare(senha, usuario.senha_hash);
         if (!senhaValida) return res.status(401).json({ error: 'Credenciais inválidas.' });
 
-        // Ajuste para gerar JWT se você usa
         return res.json({
             success: true,
             usuario: { id: usuario.id, nome: usuario.nome, email: usuario.email, tipo: usuario.tipo }
@@ -164,12 +161,8 @@ app.post('/api/chat', async (req, res) => {
             return res.status(400).json({ error: 'Mensagem é obrigatória.' });
         }
 
-        // >>> AQUI entra a chamada real da sua IA (OpenAI, Gemini, etc.) <<<
-        // Exemplo placeholder:
+        // Chamada real da sua IA (OpenAI, Gemini, Groq, etc.)
         const respostaIA = `Resposta simulada para: "${mensagem}"`;
-
-        // (Opcional) Salvar interação no banco
-        // await supabase.from('interacoes_chat').insert([...]);
 
         return res.json({ resposta: respostaIA });
     } catch (err) {
@@ -332,7 +325,7 @@ app.get('/api/atividades/:id', async (req, res) => {
     }
 });
 
-// CRIAR ATIVIDADE (agora com imagem_url opcional)
+// CRIAR ATIVIDADE (com imagem_url opcional)
 app.post('/api/atividades', async (req, res) => {
     try {
         const {
@@ -344,7 +337,7 @@ app.post('/api/atividades', async (req, res) => {
             alternativas,
             gabarito,
             rubrica_ia,
-            imagem_url // <-- NOVO CAMPO
+            imagem_url
         } = req.body;
 
         if (!enunciado) {
@@ -362,7 +355,7 @@ app.post('/api/atividades', async (req, res) => {
                 alternativas,
                 gabarito,
                 rubrica_ia,
-                imagem_url: imagem_url || null, // <-- salva a URL (ou null)
+                imagem_url: imagem_url || null,
                 ativa: true
             }])
             .select()
@@ -507,7 +500,6 @@ app.get('/api/matriculas/:aluno_id', async (req, res) => {
 // TRATAMENTO GLOBAL DE ERROS
 // ============================================================
 app.use((err, req, res, next) => {
-    // Erros específicos do Multer
     if (err instanceof multer.MulterError) {
         if (err.code === 'LIMIT_FILE_SIZE') {
             return res.status(400).json({ error: 'Imagem muito grande. Máximo 5MB.' });
