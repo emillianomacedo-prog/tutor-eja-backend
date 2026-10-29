@@ -196,25 +196,54 @@ app.get('/api/murais', async (req, res) => {
 });
 
 // ============================================================
-// HABILIDADES (Ordenado por Competência)
+// HABILIDADES DO ALUNO (Filtrado por Segmento e Ordenado)
 // ============================================================
 app.get('/api/aluno/:matricula_id/habilidades', async (req, res) => {
     try {
-        const { data: habilidades, error } = await supabase
-            .from('catalogo_habilidades')
-            .select('*')
-            .order('area', { ascending: true })
-            .order('competencia', { ascending: true }); // Ordem crescente: C1, C2, C3...
+        // Pega o segmento que o frontend enviou (fundamental ou medio)
+        const { segmento } = req.query; 
+        
+        let query = supabase.from('catalogo_habilidades').select('*');
+        
+        // Se o segmento foi enviado, filtra no banco. 
+        // (Ajuste o nome da coluna 'etapa' se no seu banco ela se chamar 'segmento')
+        if (segmento) {
+            // Mapeia 'medio' para 'Médio' ou 'Ensino Médio', dependendo de como está no seu banco
+            const dbEtapa = segmento === 'medio' ? 'Médio' : 'Fundamental';
+            query = query.ilike('etapa', `%${dbEtapa}%`); 
+        }
 
+        const { data: habilidades, error } = await query;
         if (error) throw error;
 
+        // Como o banco não ordena "H1, H2, H10" corretamente apenas com string, fazemos no JS:
         const formatadas = habilidades.map(h => ({
             area: h.area, 
             competencia: h.competencia || 'Geral', 
             habilidade_codigo: h.codigo || h.habilidade_codigo, 
             descricao: h.descricao || 'Descrição não cadastrada.'
         }));
-        
+
+        // Função para extrair o número e ordenar C1, C2... H1, H2...
+        const extrairNumero = (str) => {
+            if (!str) return 0;
+            const match = str.match(/\d+/);
+            return match ? parseInt(match[0]) : 0;
+        };
+
+        formatadas.sort((a, b) => {
+            // 1º Ordena por Área (A-Z)
+            if (a.area !== b.area) return a.area.localeCompare(b.area);
+            // 2º Ordena por Competência (C1, C2...)
+            const compA = extrairNumero(a.competencia);
+            const compB = extrairNumero(b.competencia);
+            if (compA !== compB) return compA - compB;
+            // 3º Ordena por Habilidade (H1, H2, H10...)
+            const habA = extrairNumero(a.habilidade_codigo);
+            const habB = extrairNumero(b.habilidade_codigo);
+            return habA - habB;
+        });
+
         res.json(formatadas);
     } catch (err) { 
         console.error('Erro GET habilidades:', err);
