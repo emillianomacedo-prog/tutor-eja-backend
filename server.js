@@ -485,7 +485,7 @@ app.get('/api/respostas/:aluno_id', async (req, res) => {
 });
 
 // ============================================================
-// CONSULTAR BOLETIM DO ALUNO (CORRIGIDO)
+// CONSULTAR BOLETIM DO ALUNO (AGRUPADO POR ÁREA)
 // ============================================================
 app.get('/api/boletim/:aluno_id', async (req, res) => {
     try {
@@ -500,27 +500,69 @@ app.get('/api/boletim/:aluno_id', async (req, res) => {
 
         if (errorRespostas) throw errorRespostas;
 
-        // 2. Para cada resposta, busca os dados da atividade correspondente
+        // 2. Busca os dados de cada atividade para juntar
         const respostasCompletas = await Promise.all(respostas.map(async (resp) => {
-            const { data: atividade, error: errorAtv } = await supabase
+            const { data: atividade } = await supabase
                 .from('atividades')
-                .select('area, etapa, competencia, habilidade_codigo, enunciado')
+                .select('area, etapa, competencia, habilidade_codigo, enunciado, tipo')
                 .eq('id', resp.atividade_id)
                 .single();
             
             return {
                 ...resp,
-                atividades: atividade || {} // Se não achar a atividade, retorna vazio
+                atividades: atividade || {}
             };
         }));
 
-        // 3. Calcula a média geral (apenas das atividades corrigidas)
-        const atividadesCorrigidas = respostasCompletas.filter(r => r.nota !== null && r.nota !== undefined);
-        const mediaGeral = atividadesCorrigidas.length > 0 
-            ? (atividadesCorrigidas.reduce((acc, r) => acc + Number(r.nota), 0) / atividadesCorrigidas.length).toFixed(1)
+        // 3. Agrupa por Área do Conhecimento
+        const boletimPorArea = {};
+
+        respostasCompletas.forEach(resp => {
+            // Se a atividade não tiver área definida, joga em "Outras Áreas"
+            const area = (resp.atividades && resp.atividades.area) ? resp.atividades.area : 'Outras Áreas';
+            
+            if (!boletimPorArea[area]) {
+                boletimPorArea[area] = {
+                    atividades: [],
+                    somaNotas: 0,
+                    qtdCorrigidas: 0
+                };
+            }
+
+            boletimPorArea[area].atividades.push(resp);
+
+            // Só entra no cálculo da média se tiver nota
+            if (resp.nota !== null && resp.nota !== undefined) {
+                boletimPorArea[area].somaNotas += Number(resp.nota);
+                boletimPorArea[area].qtdCorrigidas += 1;
+            }
+        });
+
+        // 4. Calcula médias por área e média geral
+        let somaTodasNotas = 0;
+        let totalCorrigidasGeral = 0;
+
+        const areasFormatadas = Object.keys(boletimPorArea).map(areaNome => {
+            const dadosArea = boletimPorArea[areaNome];
+            const mediaArea = dadosArea.qtdCorrigidas > 0 
+                ? (dadosArea.somaNotas / dadosArea.qtdCorrigidas).toFixed(1) 
+                : 0;
+
+            somaTodasNotas += dadosArea.somaNotas;
+            totalCorrigidasGeral += dadosArea.qtdCorrigidas;
+
+            return {
+                area: areaNome,
+                media: mediaArea,
+                atividades: dadosArea.atividades
+            };
+        });
+
+        const mediaGeral = totalCorrigidasGeral > 0 
+            ? (somaTodasNotas / totalCorrigidasGeral).toFixed(1) 
             : 0;
 
-        res.json({ respostas: respostasCompletas, mediaGeral });
+        res.json({ areas: areasFormatadas, mediaGeral });
     } catch (err) {
         console.error('Erro ao buscar boletim:', err);
         res.status(500).json({ error: 'Erro ao buscar dados do boletim.' });
