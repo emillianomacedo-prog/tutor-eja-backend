@@ -198,9 +198,7 @@ app.get('/api/alunos', async (req, res) => {
 app.post('/api/alunos', async (req, res) => {
     try {
         const { nome, email, senha, matricula, turma, cpf, telefone_whatsapp } = req.body;
-        if (!nome || !email) {
-            return res.status(400).json({ error: 'Nome e email são obrigatórios.' });
-        }
+        if (!nome || !email) return res.status(400).json({ error: 'Nome e email são obrigatórios.' });
 
         const senha_hash = senha ? await bcrypt.hash(senha, 10) : null;
 
@@ -494,7 +492,6 @@ async function verificarAlunosInativos() {
         cincoDiasAtras.setDate(cincoDiasAtras.getDate() - 5);
         const dataLimite = cincoDiasAtras.toISOString();
 
-        // BUSCA O TELEFONE JUNTO COM OS DADOS
         const { data: alunosInativos, error } = await supabase
             .from('alunos')
             .select('id, nome_completo, email, telefone_whatsapp, ultimo_acesso')
@@ -503,37 +500,39 @@ async function verificarAlunosInativos() {
         if (error) throw error;
 
         if (alunosInativos.length === 0) {
-            console.log('✅ Nenhum aluno inativo há mais de 5 dias.');
             return { success: true, mensagem: 'Nenhum aluno inativo.', enviados: 0 };
         }
 
-        console.log(`⚠️ Encontrados ${alunosInativos.length} aluno(s) inativo(s).`);
-        
         const mensagensEnviadas = alunosInativos.map(aluno => {
-            // Prepara o telefone
-            let numeroLimpo = (aluno.telefone_whatsapp || '').replace(/\D/g, ''); 
-            
-            // Adiciona o 55 se necessário
-            if (numeroLimpo.length === 10 || numeroLimpo.length === 11) {
-                numeroLimpo = '55' + numeroLimpo;
-            }
+            const dataAcesso = new Date(aluno.ultimo_acesso);
+            const hoje = new Date();
+            const diasInativo = Math.floor((hoje - dataAcesso) / (1000 * 60 * 60 * 24));
 
-            // Monta a mensagem e o link
-            const textoMensagem = encodeURIComponent(`Olá ${aluno.nome_completo}, notamos que você não acessa a plataforma há 5 dias. Vamos retomar seus estudos?`);
-            const linkWhatsApp = `https://wa.me/${numeroLimpo}?text=${textoMensagem}`;
+            let numeroLimpo = (aluno.telefone_whatsapp || '').replace(/\D/g, ''); 
+            if (numeroLimpo.length === 10 || numeroLimpo.length === 11) numeroLimpo = '55' + numeroLimpo;
+
+            const mensagemTexto = 
+                `Olá *${aluno.nome_completo}*, notamos que *você não acessa a plataforma há ${diasInativo} dias*. Vamos retomar seus estudos?\n\n` +
+                `🎓 *Acesse a plataforma:* https://tutor-nova-eja.vercel.app\n` +
+                `👤 *Login:* ${aluno.email}\n` +
+                `🔑 *Senha:* Sesi@1234\n\n` +
+                `💡 *Tutorial rápido:* Acesse a tela inicial para ver o passo a passo.\n\n` +
+                `Estamos aqui para ajudar!`;
+
+            const linkWhatsApp = `https://wa.me/${numeroLimpo}?text=${encodeURIComponent(mensagemTexto)}`;
 
             return {
+                aluno_id: aluno.id,
                 aluno: aluno.nome_completo,
                 email: aluno.email,
                 telefone: aluno.telefone_whatsapp,
                 link_whatsapp: linkWhatsApp,
-                mensagem: 'Link gerado com sucesso'
+                mensagem_texto: mensagemTexto
             };
         });
 
         return { 
             success: true, 
-            mensagem: `Links gerados para ${alunosInativos.length} aluno(s).`,
             enviados: alunosInativos.length,
             detalhes: mensagensEnviadas
         };
@@ -544,13 +543,61 @@ async function verificarAlunosInativos() {
     }
 }
 
-// Rota de teste para a Busca Ativa
 app.get('/api/admin/testar-notificacoes', async (req, res) => {
     try {
         const resultado = await verificarAlunosInativos();
         res.json(resultado);
     } catch (err) {
         res.status(500).json({ error: 'Erro ao testar notificações.' });
+    }
+});
+
+// ============================================================
+// HISTÓRICO DE BUSCA ATIVA (RELATÓRIOS)
+// ============================================================
+app.post('/api/busca-ativa/registrar', async (req, res) => {
+    try {
+        const { aluno_id, mensagem_enviada } = req.body;
+        if (!aluno_id) return res.status(400).json({ error: 'O ID do aluno é obrigatório.' });
+
+        const { data, error } = await supabase
+            .from('historico_busca_ativa')
+            .insert([{ aluno_id, mensagem_enviada, canal: 'WhatsApp' }])
+            .select()
+            .single();
+
+        if (error) throw error;
+        res.status(201).json(data);
+    } catch (err) {
+        console.error('Erro ao registrar busca ativa:', err);
+        res.status(500).json({ error: 'Erro ao registrar o contato.' });
+    }
+});
+
+app.get('/api/busca-ativa/relatorio/:aluno_id', async (req, res) => {
+    try {
+        const { aluno_id } = req.params;
+
+        const { data: aluno, error: errorAluno } = await supabase
+            .from('alunos')
+            .select('*')
+            .eq('id', aluno_id)
+            .single();
+
+        if (errorAluno) throw errorAluno;
+
+        const { data: historico, error: errorHistorico } = await supabase
+            .from('historico_busca_ativa')
+            .select('*')
+            .eq('aluno_id', aluno_id)
+            .order('data_envio', { ascending: false });
+
+        if (errorHistorico) throw errorHistorico;
+
+        res.json({ aluno, historico });
+    } catch (err) {
+        console.error('Erro ao gerar relatório:', err);
+        res.status(500).json({ error: 'Erro ao buscar dados do relatório.' });
     }
 });
 
@@ -574,7 +621,6 @@ app.use((err, req, res, next) => {
 // ============================================================
 app.listen(PORT, () => {
     console.log(`🚀 Tutor IA - Nova EJA rodando na porta ${PORT}`);
-    console.log(`📦 Bucket de imagens: ${BUCKET_IMAGENS}`);
 });
 
 module.exports = app;
