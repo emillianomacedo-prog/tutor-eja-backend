@@ -24,7 +24,7 @@ app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // ============================================================
-// CONEXÃO SUPABASE
+// CONEXÃO SUPABASE E NODEMAILER
 // ============================================================
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -36,13 +36,10 @@ if (!supabaseUrl || !supabaseServiceKey) {
 
 const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-// ============================================================
-// CONFIGURAÇÃO NODEMAILER (E-MAIL)
-// ============================================================
 const transporter = nodemailer.createTransport({
     host: 'smtp.gmail.com',
     port: 587,
-    secure: false, // true para 465, false para 587
+    secure: false,
     auth: {
         user: process.env.EMAIL_USER,
         pass: process.env.EMAIL_PASS
@@ -51,21 +48,12 @@ const transporter = nodemailer.createTransport({
 });
 
 // ============================================================
-// CONFIGURAÇÃO MULTER
+// CONFIGURAÇÃO DE UPLOAD (MULTER)
 // ============================================================
 const upload = multer({
     storage: multer.memoryStorage(),
-    limits: { fileSize: 5 * 1024 * 1024 },
-    fileFilter: (req, file, cb) => {
-        const permitidos = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
-        if (permitidos.includes(file.mimetype)) {
-            cb(null, true);
-        } else {
-            cb(new Error('Formato de imagem não permitido. Use JPG, PNG, WEBP ou GIF.'));
-        }
-    }
+    limits: { fileSize: 5 * 1024 * 1024 }
 });
-
 const BUCKET_IMAGENS = 'atividades-imagens';
 
 // ============================================================
@@ -86,754 +74,391 @@ app.get('/', (req, res) => {
 });
 
 // ============================================================
-// UPLOAD DE IMAGEM
+// LOGIN DO ALUNO (Compatível com index.html)
 // ============================================================
+app.post('/api/login', async (req, res) => {
+    try {
+        const { cpf, senha } = req.body;
+        if (!cpf || !senha) return res.status(400).json({ erro: 'CPF e senha são obrigatórios.' });
+
+        const { data: aluno, error } = await supabase.from('alunos').select('*').eq('cpf', cpf).maybeSingle();
+        
+        if (error) throw error;
+        if (!aluno) return res.status(401).json({ erro: 'CPF ou senha inválidos.' });
+
+        const senhaValida = await bcrypt.compare(senha, aluno.senha);
+        if (!senhaValida) return res.status(401).json({ erro: 'CPF ou senha inválidos.' });
+
+        // Atualiza o último acesso
+        await supabase.from('alunos').update({ ultimo_acesso: new Date().toISOString() }).eq('id', aluno.id);
+
+        return res.json({
+            aluno: {
+                aluno_id: aluno.id,
+                nome: aluno.nome_completo,
+                turma: aluno.turma || 'Não informada',
+                segmento: aluno.segmento || 'medio',
+                matricula_id: aluno.id // Usando o ID como matrícula para compatibilidade
+            }
+        });
+    } catch (err) {
+        console.error('Erro /api/login:', err);
+        res.status(500).json({ erro: 'Erro interno no login.' });
+    }
+});
+
+// ============================================================
+// LOGIN DO PROFESSOR E COORDENADOR
+// ============================================================
+app.post('/api/login-professor', async (req, res) => {
+    try {
+        const { email, senha } = req.body;
+        const { data: professor, error } = await supabase.from('professores').select('*').eq('email', email).maybeSingle();
+        
+        if (error) throw error;
+        if (!professor || !await bcrypt.compare(senha, professor.senha_hash)) {
+            return res.status(401).json({ error: 'E-mail ou senha inválidos.' });
+        }
+        
+        res.json({ professor: { id: professor.id, nome: professor.nome, email: professor.email, area: professor.area } });
+    } catch (err) {
+        res.status(500).json({ error: 'Erro no login do professor.' });
+    }
+});
+
+app.post('/api/login-admin', async (req, res) => {
+    try {
+        const { email, senha } = req.body;
+        const { data: usuario, error } = await supabase.from('usuarios').select('*').eq('email', email).maybeSingle();
+        
+        if (error) throw error;
+        if (!usuario || !await bcrypt.compare(senha, usuario.senha_hash || usuario.senha)) {
+            return res.status(401).json({ error: 'Credenciais inválidas.' });
+        }
+        
+        res.json({ usuario: { id: usuario.id, nome: usuario.nome || usuario.nome_completo, email: usuario.email } });
+    } catch (err) {
+        res.status(500).json({ error: 'Erro no login do coordenador.' });
+    }
+});
+
+// ============================================================
+// ATIVIDADES (Compatível com atividades.js)
+// ============================================================
+app.get('/api/atividades', async (req, res) => {
+    try {
+        const { competencia, aluno_id } = req.query;
+        
+        // 1. Busca atividades (filtra por competência se enviada)
+        let query = supabase.from('atividades').select('*').eq('ativa', true);
+        if (competencia) query = query.eq('competencia', competencia);
+        
+        const { data: atividades, error } = await query;
+        if (error) throw error;
+
+        // 2. Busca respostas do aluno (se informado)
+        let respostas = [];
+        if (aluno_id) {
+            const { data: r } = await supabase.from('respostas_atividades').select('*').eq('aluno_id', aluno_id);
+            respostas = r || [];
+        }
+
+        // 3. Formata para o frontend
+        const atividadesFormatadas = atividades.map(atv => {
+            const resp = respostas.find(r => r.atividade_id === atv.id);
+            
+            let alternativas = null;
+            if (atv.tipo === 'objetiva' && atv.alternativas) {
+                const letras = ['A', 'B', 'C', 'D', 'E'];
+                alternativas = atv.alternativas.map((texto, i) => ({ letra: letras[i], texto }));
+            }
+
+            return {
+                ...atv,
+                alternativas,
+                status: resp ? (resp.status === 'corrigida' ? 'FINALIZADA' : 'REFAZER') : 'INICIAR',
+                rascunho: resp ? resp.resposta : '',
+                nota: resp ? resp.nota : null,
+                feedback: resp ? 'Correção processada.' : null, // Pode ser ajustado para pegar da tabela
+                tentativas: resp ? 1 : 0
+            };
+        });
+
+        res.json({ atividades: atividadesFormatadas });
+    } catch (err) {
+        console.error('Erro GET /api/atividades:', err);
+        res.status(500).json({ erro: 'Erro ao listar atividades.' });
+    }
+});
+
+app.post('/api/atividades/:id/iniciar', async (req, res) => {
+    res.json({ ok: true });
+});
+
+app.patch('/api/atividades/:id/rascunho', async (req, res) => {
+    res.json({ ok: true }); // Autosave desativado por enquanto
+});
+
+app.post('/api/atividades/:id/responder', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { aluno_id, resposta } = req.body;
+
+        const { data: atv } = await supabase.from('atividades').select('tipo, gabarito').eq('id', id).single();
+        if (!atv) throw new Error('Atividade não encontrada.');
+
+        let nota = null;
+        let status = 'pendente';
+
+        if (atv.tipo === 'objetiva') {
+            nota = (resposta === atv.gabarito) ? 100 : 0;
+            status = nota >= 60 ? 'corrigida' : 'refazer';
+        }
+
+        const { data: respExistente } = await supabase.from('respostas_atividades').select('id').eq('atividade_id', id).eq('aluno_id', aluno_id).maybeSingle();
+
+        let result;
+        if (respExistente) {
+            result = await supabase.from('respostas_atividades').update({ resposta, nota, status }).eq('id', respExistente.id).select().single();
+        } else {
+            result = await supabase.from('respostas_atividades').insert([{ atividade_id: id, aluno_id, resposta, nota, status }]).select().single();
+        }
+
+        res.json({ resposta: result.data });
+    } catch (err) {
+        console.error('Erro POST /api/atividades/responder:', err);
+        res.status(500).json({ erro: 'Erro ao responder atividade.' });
+    }
+});
+
+// ============================================================
+// MURAIS (Compatível com murais.js)
+// ============================================================
+app.get('/api/murais', async (req, res) => {
+    try {
+        const { area, aluno_id } = req.query;
+        let query = supabase.from('murais').select('*');
+        if (area) query = query.eq('area', area);
+        
+        const { data: murais, error } = await query;
+        if (error) throw error;
+
+        const muraisFormatados = murais.map(m => ({
+            ...m,
+            status: 'INICIAR',
+            nota_ia: null,
+            texto_base: m.conteudo // Mapeia conteudo -> texto_base para o frontend
+        }));
+
+        res.json({ murais: muraisFormatados });
+    } catch (err) {
+        console.error('Erro GET /api/murais:', err);
+        res.status(500).json({ erro: 'Erro ao listar murais.' });
+    }
+});
+
+app.post('/api/murais/:id/mediar', async (req, res) => {
+    // Simulação da IA para a mediação do mural
+    res.json({ 
+        mediacao: { 
+            feedback: "Excelente ponto de vista! Para aprofundar, pense em como isso afeta a sociedade.", 
+            perguntas: ["Qual seria a solução para esse problema?", "Você consegue dar um exemplo prático?"], 
+            pronto_para_avaliar: true 
+        } 
+    });
+});
+
+app.post('/api/murais/:id/avaliar', async (req, res) => {
+    // Simulação da nota da IA para o mural
+    res.json({ postagem: { status: 'FINALIZADA', nota_ia: 85 } });
+});
+
+// ============================================================
+// BOLETIM (Compatível com boletim.js)
+// ============================================================
+app.get('/api/boletim', async (req, res) => {
+    try {
+        const { aluno_id } = req.query;
+        if (!aluno_id) return res.status(400).json({ erro: 'ID do aluno é obrigatório.' });
+
+        // Busca todas as respostas do aluno
+        const { data: respostas, error } = await supabase.from('respostas_atividades').select('*').eq('aluno_id', aluno_id);
+        if (error) throw error;
+
+        const areas = {
+            linguagens: { comps: {}, total: 0, aprovadas: 0 },
+            matematica: { comps: {}, total: 0, aprovadas: 0 },
+            ciencias_natureza: { comps: {}, total: 0, aprovadas: 0 },
+            ciencias_humanas: { comps: {}, total: 0, aprovadas: 0 }
+        };
+
+        for (const r of respostas) {
+            const { data: atv } = await supabase.from('atividades').select('area, competencia').eq('id', r.atividade_id).single();
+            
+            if (!atv || !areas[atv.area]) continue;
+
+            const areaKey = atv.area.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, "").replace(/ /g, '_');
+            const areaObj = areas[areaKey] || areas['linguagens']; 
+            
+            if (!areaObj.comps[atv.competencia]) {
+                areaObj.comps[atv.competencia] = { notas: [] };
+            }
+            areaObj.comps[atv.competencia].notas.push(r.nota || 0);
+        }
+
+        const por_area = {};
+        let total_competencias = 0;
+        let total_aprovadas = 0;
+
+        for (const [areaKey, data] of Object.entries(areas)) {
+            por_area[areaKey] = Object.entries(data.comps).map(([comp, obj]) => {
+                const media = obj.notas.reduce((a, b) => a + b, 0) / obj.notas.length;
+                const aprovado = media >= 60;
+                
+                total_competencias++;
+                if (aprovado) total_aprovadas++;
+
+                return {
+                    competencia: comp,
+                    nota_oficina: 0,
+                    nota_atividades: media,
+                    nota_engajamento: 0,
+                    nota_final: media,
+                    aprovado_competencia: aprovado
+                };
+            });
+        }
+
+        res.json({
+            apto_certificacao: total_aprovadas === total_competencias && total_competencias > 0,
+            total_competencias,
+            total_aprovadas,
+            por_area
+        });
+
+    } catch (err) {
+        console.error('Erro GET /api/boletim:', err);
+        res.status(500).json({ erro: 'Erro ao gerar boletim.' });
+    }
+});
+
+// ============================================================
+// ROTAS DO ADMIN/PROFESSOR E BUSCA ATIVA
+// ============================================================
+
+// 1. Upload de Imagem
 app.post('/api/upload-imagem', upload.single('imagem'), async (req, res) => {
     try {
         if (!req.file) return res.status(400).json({ error: 'Nenhum arquivo enviado.' });
         const filePath = gerarNomeArquivo(req.file.originalname);
 
-        const { error: uploadError } = await supabase.storage
-            .from(BUCKET_IMAGENS)
-            .upload(filePath, req.file.buffer, {
-                contentType: req.file.mimetype,
-                upsert: false
-            });
-
+        const { error: uploadError } = await supabase.storage.from(BUCKET_IMAGENS).upload(filePath, req.file.buffer, { contentType: req.file.mimetype });
         if (uploadError) throw uploadError;
 
-        const { data: publicUrlData } = supabase.storage
-            .from(BUCKET_IMAGENS)
-            .getPublicUrl(filePath);
-
-        return res.json({ success: true, url: publicUrlData.publicUrl, path: filePath });
+        const { data: publicUrlData } = supabase.storage.from(BUCKET_IMAGENS).getPublicUrl(filePath);
+        return res.json({ success: true, url: publicUrlData.publicUrl });
     } catch (err) {
-        console.error('Erro rota /api/upload-imagem:', err);
-        return res.status(500).json({ error: 'Erro interno ao processar upload.' });
+        res.status(500).json({ error: 'Erro no upload.' });
     }
 });
 
-// ============================================================
-// AUTENTICAÇÃO DO COORDENADOR
-// ============================================================
-app.post('/api/login', async (req, res) => {
-    try {
-        const { email, senha } = req.body;
-        if (!email || !senha) return res.status(400).json({ error: 'Email e senha são obrigatórios.' });
-
-        const { data: usuario, error } = await supabase
-            .from('usuarios')
-            .select('*')
-            .eq('email', email)
-            .maybeSingle();
-
-        if (error) throw error;
-        if (!usuario) return res.status(401).json({ error: 'Credenciais inválidas.' });
-
-        const senhaValida = await bcrypt.compare(senha, usuario.senha_hash || usuario.senha);
-        if (!senhaValida) return res.status(401).json({ error: 'Credenciais inválidas.' });
-
-        return res.json({
-            success: true,
-            usuario: { id: usuario.id, nome: usuario.nome || usuario.nome_completo, email: usuario.email, tipo: usuario.tipo }
-        });
-    } catch (err) {
-        console.error('Erro /api/login:', err);
-        return res.status(500).json({ error: 'Erro interno no login.' });
-    }
-});
-
-// ============================================================
-// AUTENTICAÇÃO DOS PROFESSORES
-// ============================================================
-app.post('/api/login-professor', async (req, res) => {
-    try {
-        const { email, senha } = req.body;
-        if (!email || !senha) return res.status(400).json({ error: 'E-mail e senha são obrigatórios.' });
-
-        const { data: professor, error } = await supabase
-            .from('professores')
-            .select('*')
-            .eq('email', email)
-            .maybeSingle();
-
-        if (error) throw error;
-        if (!professor) return res.status(401).json({ error: 'E-mail ou senha inválidos.' });
-
-        const senhaValida = await bcrypt.compare(senha, professor.senha_hash);
-        if (!senhaValida) return res.status(401).json({ error: 'E-mail ou senha inválidos.' });
-
-        return res.json({
-            success: true,
-            professor: { 
-                id: professor.id, 
-                nome: professor.nome, 
-                email: professor.email, 
-                area: professor.area 
-            }
-        });
-    } catch (err) {
-        console.error('Erro /api/login-professor:', err);
-        return res.status(500).json({ error: 'Erro interno no servidor.' });
-    }
-});
-
-// ============================================================
-// AUTENTICAÇÃO DO ALUNO (NOVO)
-// ============================================================
-app.post('/api/login-aluno', async (req, res) => {
-    try {
-        const { cpf, senha } = req.body;
-        if (!cpf || !senha) return res.status(400).json({ error: 'CPF e senha são obrigatórios.' });
-
-        // Busca o aluno pelo CPF
-        const { data: aluno, error } = await supabase
-            .from('alunos')
-            .select('*')
-            .eq('cpf', cpf)
-            .maybeSingle();
-
-        if (error) throw error;
-        if (!aluno) return res.status(401).json({ error: 'CPF ou senha inválidos.' });
-
-        // Verifica a senha (a coluna no banco se chama 'senha')
-        const senhaValida = await bcrypt.compare(senha, aluno.senha);
-        if (!senhaValida) return res.status(401).json({ error: 'CPF ou senha inválidos.' });
-
-        // Atualiza o último acesso do aluno para o sistema de busca ativa
-        await supabase
-            .from('alunos')
-            .update({ ultimo_acesso: new Date().toISOString() })
-            .eq('id', aluno.id);
-
-        return res.json({
-            success: true,
-            aluno: { 
-                id: aluno.id, 
-                nome: aluno.nome_completo, 
-                turma: aluno.turma,
-                cpf: aluno.cpf
-            }
-        });
-    } catch (err) {
-        console.error('Erro /api/login-aluno:', err);
-        return res.status(500).json({ error: 'Erro interno no login.' });
-    }
-});
-
-// ============================================================
-// CHAT COM IA
-// ============================================================
-app.post('/api/chat', async (req, res) => {
-    try {
-        const { mensagem } = req.body;
-        if (!mensagem) return res.status(400).json({ error: 'Mensagem é obrigatória.' });
-        const respostaIA = `Resposta simulada para: "${mensagem}"`;
-        return res.json({ resposta: respostaIA });
-    } catch (err) {
-        console.error('Erro /api/chat:', err);
-        return res.status(500).json({ error: 'Erro ao processar chat.' });
-    }
-});
-
-// ============================================================
-// ALUNOS - CRUD
-// ============================================================
-app.get('/api/alunos', async (req, res) => {
-    try {
-        const { data, error } = await supabase
-            .from('alunos')
-            .select('*')
-            .order('nome_completo', { ascending: true });
-        if (error) throw error;
-        res.json(data);
-    } catch (err) {
-        console.error('Erro GET /api/alunos:', err);
-        res.status(500).json({ error: 'Erro ao listar alunos.' });
-    }
-});
-
-app.post('/api/alunos', async (req, res) => {
-    try {
-        const { nome, email, senha, matricula, turma, cpf, telefone_whatsapp } = req.body;
-        if (!nome || !email) return res.status(400).json({ error: 'Nome e email são obrigatórios.' });
-
-        const senha_hash = senha ? await bcrypt.hash(senha, 10) : null;
-
-        const { data, error } = await supabase
-            .from('alunos')
-            .insert([{ 
-                nome_completo: nome,
-                email, 
-                senha: senha_hash,
-                cpf,
-                telefone_whatsapp,
-                matricula, 
-                turma 
-            }])
-            .select()
-            .single();
-
-        if (error) throw error;
-        res.status(201).json(data);
-    } catch (err) {
-        console.error('Erro POST /api/alunos:', err);
-        res.status(500).json({ error: 'Erro ao criar aluno.' });
-    }
-});
-
-app.put('/api/alunos/:id', async (req, res) => {
-    try {
-        const { id } = req.params;
-        const { nome, email, matricula, turma, cpf, telefone_whatsapp } = req.body;
-
-        const { data, error } = await supabase
-            .from('alunos')
-            .update({ 
-                nome_completo: nome,
-                email, 
-                matricula, 
-                turma, 
-                cpf, 
-                telefone_whatsapp 
-            })
-            .eq('id', id)
-            .select()
-            .single();
-
-        if (error) throw error;
-        res.json(data);
-    } catch (err) {
-        console.error('Erro PUT /api/alunos:', err);
-        res.status(500).json({ error: 'Erro ao atualizar aluno.' });
-    }
-});
-
-app.delete('/api/alunos/:id', async (req, res) => {
-    try {
-        const { id } = req.params;
-        const { error } = await supabase.from('alunos').delete().eq('id', id);
-        if (error) throw error;
-        res.json({ success: true });
-    } catch (err) {
-        console.error('Erro DELETE /api/alunos:', err);
-        res.status(500).json({ error: 'Erro ao deletar aluno.' });
-    }
-});
-
-// ============================================================
-// MURAIS - CRUD
-// ============================================================
-app.get('/api/murais', async (req, res) => {
-    try {
-        const { data, error } = await supabase.from('murais').select('*').order('created_at', { ascending: false });
-        if (error) throw error;
-        res.json(data);
-    } catch (err) {
-        console.error('Erro GET /api/murais:', err);
-        res.status(500).json({ error: 'Erro ao listar murais.' });
-    }
-});
-
-app.post('/api/murais', async (req, res) => {
-    try {
-        const { titulo, conteudo, autor } = req.body;
-        if (!titulo || !conteudo) return res.status(400).json({ error: 'Título e conteúdo são obrigatórios.' });
-        const { data, error } = await supabase.from('murais').insert([{ titulo, conteudo, autor }]).select().single();
-        if (error) throw error;
-        res.status(201).json(data);
-    } catch (err) {
-        console.error('Erro POST /api/murais:', err);
-        res.status(500).json({ error: 'Erro ao criar mural.' });
-    }
-});
-
-app.delete('/api/murais/:id', async (req, res) => {
-    try {
-        const { id } = req.params;
-        const { error } = await supabase.from('murais').delete().eq('id', id);
-        if (error) throw error;
-        res.json({ success: true });
-    } catch (err) {
-        console.error('Erro DELETE /api/murais:', err);
-        res.status(500).json({ error: 'Erro ao deletar mural.' });
-    }
-});
-
-// ============================================================
-// ATIVIDADES - CRUD
-// ============================================================
-app.get('/api/atividades', async (req, res) => {
-    try {
-        const { data, error } = await supabase
-            .from('atividades')
-            .select(`*, respostas_atividades (count)`)
-            .eq('ativa', true)
-            .order('id', { ascending: false });
-
-        if (error) throw error;
-
-        const atividadesFormatadas = data.map(atv => ({
-            ...atv,
-            total_respostas: atv.respostas_atividades[0]?.count || 0
-        }));
-
-        res.json(atividadesFormatadas);
-    } catch (err) {
-        console.error('Erro GET /api/atividades:', err);
-        res.status(500).json({ error: 'Erro ao listar atividades.' });
-    }
-});
-
-app.get('/api/atividades/:id', async (req, res) => {
-    try {
-        const { id } = req.params;
-        const { data, error } = await supabase.from('atividades').select('*').eq('id', id).single();
-        if (error) throw error;
-        res.json(data);
-    } catch (err) {
-        console.error('Erro GET /api/atividades/:id:', err);
-        res.status(500).json({ error: 'Erro ao buscar atividade.' });
-    }
-});
-
-// ATIVIDADES DO ALUNO (BUSCAR E JUNTAR COM RESPOSTAS)
-app.get('/api/atividades-aluno/:aluno_id', async (req, res) => {
-    try {
-        const { aluno_id } = req.params;
-
-        // Busca todas as atividades ativas
-        const { data: atividades, error: errAtv } = await supabase
-            .from('atividades')
-            .select('*')
-            .eq('ativa', true)
-            .order('id', { ascending: false });
-
-        if (errAtv) throw errAtv;
-
-        // Busca as respostas deste aluno
-        const { data: respostas, error: errResp } = await supabase
-            .from('respostas_atividades')
-            .select('*')
-            .eq('aluno_id', aluno_id);
-
-        if (errResp) throw errResp;
-
-        // Junta as atividades com as respostas (se houver)
-        const atividadesComStatus = atividades.map(atv => {
-            const resposta = respostas.find(r => r.atividade_id === atv.id);
-            return {
-                ...atv,
-                resposta_aluno: resposta || null
-            };
-        });
-
-        res.json(atividadesComStatus);
-    } catch (err) {
-        console.error('Erro ao buscar atividades do aluno:', err);
-        res.status(500).json({ error: 'Erro ao buscar atividades.' });
-    }
-});
-
-app.post('/api/atividades', async (req, res) => {
+// 2. CRUD de Atividades (Para o painel do professor)
+app.post('/api/atividades-admin', async (req, res) => {
     try {
         const { etapa, competencia, habilidade_codigo, area, tipo, enunciado, alternativas, gabarito, imagem_url } = req.body;
-        if (!enunciado) return res.status(400).json({ error: 'Enunciado é obrigatório.' });
-
-        const { data, error } = await supabase
-            .from('atividades')
-            .insert([{ etapa, competencia, habilidade_codigo, area, tipo, enunciado, alternativas, gabarito, imagem_url: imagem_url || null, ativa: true }])
-            .select()
-            .single();
-
+        const { data, error } = await supabase.from('atividades').insert([{ 
+            etapa, competencia, habilidade_codigo, area, tipo, enunciado, alternativas, gabarito, imagem_url, ativa: true 
+        }]).select().single();
+        
         if (error) throw error;
         res.status(201).json(data);
     } catch (err) {
-        console.error('Erro POST /api/atividades:', err);
         res.status(500).json({ error: 'Erro ao criar atividade.' });
     }
 });
 
-app.put('/api/atividades/:id', async (req, res) => {
+// 3. Listar Alunos
+app.get('/api/alunos', async (req, res) => {
     try {
-        const { id } = req.params;
-        const { etapa, competencia, habilidade_codigo, area, tipo, enunciado, alternativas, gabarito, imagem_url, ativa } = req.body;
-
-        const { data, error } = await supabase
-            .from('atividades')
-            .update({ etapa, competencia, habilidade_codigo, area, tipo, enunciado, alternativas, gabarito, imagem_url, ativa })
-            .eq('id', id)
-            .select()
-            .single();
-
+        const { data, error } = await supabase.from('alunos').select('*').order('nome_completo');
         if (error) throw error;
         res.json(data);
     } catch (err) {
-        console.error('Erro PUT /api/atividades:', err);
-        res.status(500).json({ error: 'Erro ao atualizar atividade.' });
+        res.status(500).json({ error: 'Erro ao listar alunos.' });
     }
 });
 
-app.delete('/api/atividades/:id', async (req, res) => {
-    try {
-        const { id } = req.params;
-        const { error } = await supabase.from('atividades').delete().eq('id', id);
-        if (error) throw error;
-        res.json({ success: true });
-    } catch (err) {
-        console.error('Erro DELETE /api/atividades:', err);
-        res.status(500).json({ error: 'Erro ao deletar atividade.' });
-    }
-});
-
-// ============================================================
-// RESPOSTAS DE ATIVIDADES
-// ============================================================
-app.post('/api/respostas', async (req, res) => {
-    try {
-        const { atividade_id, aluno_id, resposta } = req.body;
-        if (!atividade_id || !aluno_id) return res.status(400).json({ error: 'atividade_id e aluno_id são obrigatórios.' });
-
-        const { data: atividade, error: errorAtv } = await supabase
-            .from('atividades')
-            .select('tipo, gabarito')
-            .eq('id', atividade_id)
-            .single();
-            
-        if (errorAtv) throw errorAtv;
-
-        let correta = null;
-        let status = 'pendente';
-        let nota = null;
-
-        if (atividade.tipo === 'objetiva') {
-            correta = (resposta === atividade.gabarito);
-            nota = correta ? 100 : 0;
-            status = correta ? 'corrigida' : 'refazer';
-        }
-
-        // Verifica se o aluno já respondeu essa atividade (para atualizar em vez de duplicar)
-        const { data: respostaExistente } = await supabase
-            .from('respostas_atividades')
-            .select('id')
-            .eq('atividade_id', atividade_id)
-            .eq('aluno_id', aluno_id)
-            .maybeSingle();
-
-        let data, error;
-        if (respostaExistente) {
-            const result = await supabase
-                .from('respostas_atividades')
-                .update({ resposta, correta, nota, status })
-                .eq('id', respostaExistente.id)
-                .select()
-                .single();
-            data = result.data;
-            error = result.error;
-        } else {
-            const result = await supabase
-                .from('respostas_atividades')
-                .insert([{ atividade_id, aluno_id, resposta, correta, nota, status }])
-                .select()
-                .single();
-            data = result.data;
-            error = result.error;
-        }
-
-        if (error) throw error;
-        res.status(201).json(data);
-    } catch (err) {
-        console.error('Erro POST /api/respostas:', err);
-        res.status(500).json({ error: 'Erro ao registrar resposta.' });
-    }
-});
-
-app.put('/api/respostas/:id/corrigir', async (req, res) => {
-    try {
-        const { id } = req.params;
-        const { nota } = req.body;
-        if (nota === undefined) return res.status(400).json({ error: 'A nota é obrigatória.' });
-
-        const status = nota >= 60 ? 'corrigida' : 'refazer';
-
-        const { data, error } = await supabase
-            .from('respostas_atividades')
-            .update({ nota: nota, status: status, correta: nota >= 60 })
-            .eq('id', id)
-            .select()
-            .single();
-
-        if (error) throw error;
-        res.json({ success: true, status: status, data });
-    } catch (err) {
-        console.error('Erro ao corrigir resposta:', err);
-        res.status(500).json({ error: 'Erro ao salvar correção.' });
-    }
-});
-
-app.get('/api/respostas/:aluno_id', async (req, res) => {
-    try {
-        const { aluno_id } = req.params;
-        const { data, error } = await supabase
-            .from('respostas_atividades')
-            .select('*, atividades(*)')
-            .eq('aluno_id', aluno_id)
-            .order('created_at', { ascending: false });
-        if (error) throw error;
-        res.json(data);
-    } catch (err) {
-        console.error('Erro GET /api/respostas:', err);
-        res.status(500).json({ error: 'Erro ao listar respostas.' });
-    }
-});
-
-// ============================================================
-// CONSULTAR BOLETIM DO ALUNO (AGRUPADO POR ÁREA)
-// ============================================================
-app.get('/api/boletim/:aluno_id', async (req, res) => {
-    try {
-        const { aluno_id } = req.params;
-
-        const { data: respostas, error: errorRespostas } = await supabase
-            .from('respostas_atividades')
-            .select('*')
-            .eq('aluno_id', aluno_id)
-            .order('created_at', { ascending: false });
-
-        if (errorRespostas) throw errorRespostas;
-
-        const respostasCompletas = await Promise.all(respostas.map(async (resp) => {
-            const { data: atividade } = await supabase
-                .from('atividades')
-                .select('area, etapa, competencia, habilidade_codigo, enunciado, tipo')
-                .eq('id', resp.atividade_id)
-                .single();
-            
-            return {
-                ...resp,
-                atividades: atividade || {}
-            };
-        }));
-
-        const boletimPorArea = {};
-
-        respostasCompletas.forEach(resp => {
-            const area = (resp.atividades && resp.atividades.area) ? resp.atividades.area : 'Outras Áreas';
-            
-            if (!boletimPorArea[area]) {
-                boletimPorArea[area] = {
-                    atividades: [],
-                    somaNotas: 0,
-                    qtdCorrigidas: 0
-                };
-            }
-
-            boletimPorArea[area].atividades.push(resp);
-
-            if (resp.nota !== null && resp.nota !== undefined) {
-                boletimPorArea[area].somaNotas += Number(resp.nota);
-                boletimPorArea[area].qtdCorrigidas += 1;
-            }
-        });
-
-        let somaTodasNotas = 0;
-        let totalCorrigidasGeral = 0;
-
-        const areasFormatadas = Object.keys(boletimPorArea).map(areaNome => {
-            const dadosArea = boletimPorArea[areaNome];
-            const mediaArea = dadosArea.qtdCorrigidas > 0 
-                ? (dadosArea.somaNotas / dadosArea.qtdCorrigidas).toFixed(1) 
-                : 0;
-
-            somaTodasNotas += dadosArea.somaNotas;
-            totalCorrigidasGeral += dadosArea.qtdCorrigidas;
-
-            return {
-                area: areaNome,
-                media: mediaArea,
-                atividades: dadosArea.atividades
-            };
-        });
-
-        const mediaGeral = totalCorrigidasGeral > 0 
-            ? (somaTodasNotas / totalCorrigidasGeral).toFixed(1) 
-            : 0;
-
-        res.json({ areas: areasFormatadas, mediaGeral });
-    } catch (err) {
-        console.error('Erro ao buscar boletim:', err);
-        res.status(500).json({ error: 'Erro ao buscar dados do boletim.' });
-    }
-});
-
-// ============================================================
-// CATÁLOGO DE HABILIDADES
-// ============================================================
-app.get('/api/habilidades', async (req, res) => {
-    try {
-        const { data, error } = await supabase.from('catalogo_habilidades').select('*').order('codigo', { ascending: true });
-        if (error) throw error;
-        res.json(data);
-    } catch (err) {
-        console.error('Erro GET /api/habilidades:', err);
-        res.status(500).json({ error: 'Erro ao listar habilidades.' });
-    }
-});
-
-// ============================================================
-// ROTINA DE NOTIFICAÇÕES (BUSCA ATIVA)
-// ============================================================
-async function verificarAlunosInativos() {
+// 4. Relatório de Busca Ativa
+app.get('/api/admin/testar-notificacoes', async (req, res) => {
     try {
         const cincoDiasAtras = new Date();
         cincoDiasAtras.setDate(cincoDiasAtras.getDate() - 5);
-        const dataLimite = cincoDiasAtras.toISOString();
-
-        const { data: alunosInativos, error } = await supabase
-            .from('alunos')
+        
+        const { data: alunosInativos, error } = await supabase.from('alunos')
             .select('id, nome_completo, email, telefone_whatsapp, ultimo_acesso')
-            .lt('ultimo_acesso', dataLimite);
+            .lt('ultimo_acesso', cincoDiasAtras.toISOString());
 
         if (error) throw error;
 
-        if (alunosInativos.length === 0) {
-            return { success: true, enviados: 0 };
-        }
+        const detalhes = alunosInativos.map(aluno => {
+            const diasInativo = Math.floor((new Date() - new Date(aluno.ultimo_acesso)) / (1000 * 60 * 60 * 24));
+            
+            let numeroLimpo = (aluno.telefone_whatsapp || '').replace(/\D/g, '');
+            if (numeroLimpo.length >= 10) numeroLimpo = '55' + numeroLimpo;
 
-        const mensagensEnviadas = alunosInativos.map(aluno => {
-            const dataAcesso = new Date(aluno.ultimo_acesso);
-            const hoje = new Date();
-            const diasInativo = Math.floor((hoje - dataAcesso) / (1000 * 60 * 60 * 24));
-
-            let numeroLimpo = (aluno.telefone_whatsapp || '').replace(/\D/g, ''); 
-            if (numeroLimpo.length === 10 || numeroLimpo.length === 11) numeroLimpo = '55' + numeroLimpo;
-
-            const textoWpp = 
-                `Olá *${aluno.nome_completo}*, notamos que *você não acessa a plataforma há ${diasInativo} dias*. Vamos retomar seus estudos?\n\n` +
-                `🎓 *Acesse:* https://tutor-nova-eja.vercel.app\n` +
-                `👤 *Login:* ${aluno.email}\n` +
-                `🔑 *Senha:* Sesi@1234\n\n` +
-                `💡 *Tutorial:* Acesse a tela inicial para ver o passo a passo.`;
-
-            const linkWhatsApp = `https://wa.me/${numeroLimpo}?text=${encodeURIComponent(textoWpp)}`;
-
+            const msg = `Olá *${aluno.nome_completo}*, notamos que *você não acessa a plataforma há ${diasInativo} dias*. Vamos retomar seus estudos?\n\n🎓 *Acesse:* https://tutor-nova-eja.vercel.app\n👤 *Login:* ${aluno.email}\n🔑 *Senha:* Sesi@1234`;
+            
             return {
                 aluno_id: aluno.id,
                 aluno: aluno.nome_completo,
                 email: aluno.email,
-                telefone: aluno.telefone_whatsapp,
-                link_whatsapp: linkWhatsApp,
-                mensagem_texto: textoWpp,
-                dias_inativo: diasInativo
+                dias_inativo: diasInativo,
+                mensagem_texto: msg,
+                link_whatsapp: `https://wa.me/${numeroLimpo}?text=${encodeURIComponent(msg)}`
             };
         });
 
-        return { success: true, enviados: alunosInativos.length, detalhes: mensagensEnviadas };
+        res.json({ success: true, enviados: alunosInativos.length, detalhes });
     } catch (err) {
-        console.error('Erro na rotina de inativos:', err);
-        throw err;
-    }
-}
-
-app.get('/api/admin/testar-notificacoes', async (req, res) => {
-    try {
-        const resultado = await verificarAlunosInativos();
-        res.json(resultado);
-    } catch (err) {
-        res.status(500).json({ error: 'Erro ao testar notificações.' });
+        res.status(500).json({ error: 'Erro ao buscar inativos.' });
     }
 });
 
-// ============================================================
-// HISTÓRICO DE BUSCA ATIVA E ENVIO DE E-MAIL
-// ============================================================
+// 5. Histórico de Busca Ativa (Registrar)
 app.post('/api/busca-ativa/registrar', async (req, res) => {
     try {
         const { aluno_id, mensagem_enviada, canal, aluno_email, aluno_nome, dias_inativo } = req.body;
-        if (!aluno_id) return res.status(400).json({ error: 'O ID do aluno é obrigatório.' });
 
-        if (canal === 'Email') {
-            if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
-                console.warn('⚠️ Credenciais de e-mail não configuradas no Render.');
-            } else {
-                const mailOptions = {
-                    from: `"Tutor IA Nova EJA" <${process.env.EMAIL_USER}>`,
-                    to: aluno_email,
-                    subject: `Sentimos sua falta, ${aluno_nome}! Vamos estudar?`,
-                    html: `
-                        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; color: #333;">
-                            <h2 style="color: #1e3a8a;">Olá, ${aluno_nome}!</h2>
-                            <p>Notamos que <strong>você não acessa a plataforma há ${dias_inativo} dias</strong>. Estamos com saudades e queremos te ajudar a retomar seus estudos!</p>
-                            <p>Clique no botão abaixo para acessar o sistema:</p>
-                            <a href="https://tutor-nova-eja.vercel.app" style="display: inline-block; background-color: #1e3a8a; color: #fff; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: bold; margin: 16px 0;">Acessar Plataforma</a>
-                            <p><strong>Login:</strong> ${aluno_email}</p>
-                            <p><strong>Senha:</strong> Sesi@1234</p>
-                            <p>Qualquer dúvida, estamos à disposição.</p>
-                            <hr style="border: none; border-top: 1px solid #eee; margin: 20px 0;" />
-                            <p style="font-size: 12px; color: #888;">SESI - Serviço Social da Indústria - Nova EJA</p>
-                        </div>
-                    `
-                };
-                
-                await transporter.sendMail(mailOptions);
-                console.log(`✅ E-mail enviado com sucesso para ${aluno_email}`);
-            }
+        if (canal === 'Email' && process.env.EMAIL_USER) {
+            await transporter.sendMail({
+                from: `"Tutor IA Nova EJA" <${process.env.EMAIL_USER}>`,
+                to: aluno_email,
+                subject: `Sentimos sua falta, ${aluno_nome}! Vamos estudar?`,
+                html: `<p>Olá, ${aluno_nome}!</p><p>Notamos que você não acessa a plataforma há ${dias_inativo} dias. Clique <a href="https://tutor-nova-eja.vercel.app">aqui</a> para voltar a estudar.</p>`
+            });
         }
 
-        const { data, error } = await supabase
-            .from('historico_busca_ativa')
+        const { data, error } = await supabase.from('historico_busca_ativa')
             .insert([{ aluno_id, mensagem_enviada, canal: canal || 'WhatsApp' }])
-            .select()
-            .single();
+            .select().single();
 
         if (error) throw error;
         res.status(201).json(data);
     } catch (err) {
-        console.error('Erro ao registrar/enviar busca ativa:', err);
-        res.status(500).json({ error: 'Erro ao processar o contato.' });
+        res.status(500).json({ error: 'Erro ao registrar busca.' });
     }
 });
 
+// 6. Gerar Relatório de Busca Ativa
 app.get('/api/busca-ativa/relatorio/:aluno_id', async (req, res) => {
     try {
-        const { aluno_id } = req.params;
-
-        const { data: aluno, error: errorAluno } = await supabase
-            .from('alunos')
-            .select('*')
-            .eq('id', aluno_id)
-            .single();
-
-        if (errorAluno) throw errorAluno;
-
-        const { data: historico, error: errorHistorico } = await supabase
-            .from('historico_busca_ativa')
-            .select('*')
-            .eq('aluno_id', aluno_id)
-            .order('data_envio', { ascending: false });
-
-        if (errorHistorico) throw errorHistorico;
-
+        const { data: aluno } = await supabase.from('alunos').select('*').eq('id', req.params.aluno_id).single();
+        const { data: historico } = await supabase.from('historico_busca_ativa').select('*').eq('aluno_id', req.params.aluno_id).order('data_envio', { ascending: false });
+        
         res.json({ aluno, historico });
     } catch (err) {
-        console.error('Erro ao gerar relatório:', err);
-        res.status(500).json({ error: 'Erro ao buscar dados do relatório.' });
+        res.status(500).json({ error: 'Erro ao gerar relatório.' });
     }
-});
-
-// ============================================================
-// TRATAMENTO GLOBAL DE ERROS
-// ============================================================
-app.use((err, req, res, next) => {
-    if (err instanceof multer.MulterError) {
-        if (err.code === 'LIMIT_FILE_SIZE') return res.status(400).json({ error: 'Imagem muito grande. Máximo 5MB.' });
-        return res.status(400).json({ error: `Erro no upload: ${err.message}` });
-    }
-    if (err && err.message && err.message.includes('Formato de imagem')) {
-        return res.status(400).json({ error: err.message });
-    }
-    console.error('Erro não tratado:', err);
-    res.status(500).json({ error: 'Erro interno no servidor.' });
 });
 
 // ============================================================
