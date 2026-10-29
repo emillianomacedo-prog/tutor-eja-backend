@@ -338,12 +338,32 @@ app.get('/api/admin/testar-notificacoes', async (req, res) => {
 app.post('/api/busca-ativa/registrar', async (req, res) => {
     try {
         const { aluno_id, mensagem_enviada, canal, aluno_email, aluno_nome, dias_inativo } = req.body;
-        if (canal === 'Email' && process.env.EMAIL_USER) {
-            await transporter.sendMail({ from: `"Tutor IA" <${process.env.EMAIL_USER}>`, to: aluno_email, subject: `Sentimos sua falta, ${aluno_nome}!`, html: `<p>Olá, ${aluno_nome}!</p><p>Notamos que você não acessa há ${dias_inativo} dias. Volte a estudar!</p>` });
+        
+        // Se for e-mail, monta o texto padrão para salvar no histórico
+        let textoSalvar = mensagem_enviada;
+        
+        if (canal === 'Email') {
+            textoSalvar = `Assunto: Sentimos sua falta, ${aluno_nome}! Vamos estudar?\n\nOlá, ${aluno_nome}!\nNotamos que você não acessa a plataforma há ${dias_inativo} dias. Estamos com saudades e queremos te ajudar a retomar seus estudos!\nClique no botão abaixo para acessar o sistema.\nLogin: ${aluno_email}\nSenha: Sesi@1234`;
+
+            if (process.env.EMAIL_USER && process.env.EMAIL_PASS) {
+                await transporter.sendMail({
+                    from: `"Tutor IA Nova EJA" <${process.env.EMAIL_USER}>`,
+                    to: aluno_email,
+                    subject: `Sentimos sua falta, ${aluno_nome}! Vamos estudar?`,
+                    html: `<p>Olá, ${aluno_nome}!</p><p>Notamos que você não acessa a plataforma há ${dias_inativo} dias...</p><p><a href="https://tutor-nova-eja.vercel.app">Acessar Plataforma</a></p>`
+                });
+            }
         }
-        const { data } = await supabase.from('historico_busca_ativa').insert([{ aluno_id, mensagem_enviada, canal }]).select().single();
+
+        const { data, error } = await supabase.from('historico_busca_ativa')
+            .insert([{ aluno_id, mensagem_enviada: textoSalvar, canal: canal || 'WhatsApp' }])
+            .select().single();
+
+        if (error) throw error;
         res.status(201).json(data);
-    } catch (err) { res.status(500).json({ error: 'Erro ao registrar.' }); }
+    } catch (err) {
+        res.status(500).json({ error: 'Erro ao registrar.' });
+    }
 });
 
 app.get('/api/busca-ativa/relatorio/:id', async (req, res) => {
