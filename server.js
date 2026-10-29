@@ -315,24 +315,115 @@ app.post('/api/atividades-admin', async (req, res) => {
     } catch (err) { res.status(500).json({ error: 'Erro ao criar.' }); }
 });
 
+// ============================================================
+// ALUNOS - CRUD (Com validação de CPF + Etapa)
+// ============================================================
 app.get('/api/alunos', async (req, res) => {
-    const { data } = await supabase.from('alunos').select('*').order('nome_completo');
-    res.json(data);
+    try {
+        const { data, error } = await supabase.from('alunos').select('*').order('nome_completo');
+        if (error) throw error;
+        res.json(data);
+    } catch (err) {
+        res.status(500).json({ error: 'Erro ao listar alunos.' });
+    }
 });
 
-app.get('/api/admin/testar-notificacoes', async (req, res) => {
+app.post('/api/alunos', async (req, res) => {
     try {
-        const dataLimite = new Date(); dataLimite.setDate(dataLimite.getDate() - 5);
-        const { data: inativos } = await supabase.from('alunos').select('id, nome_completo, email, telefone_whatsapp, ultimo_acesso').lt('ultimo_acesso', dataLimite.toISOString());
+        const { nome, email, cpf, telefone_whatsapp, matricula, turma, etapa, senha } = req.body;
         
-        const detalhes = inativos.map(aluno => {
-            const dias = Math.floor((new Date() - new Date(aluno.ultimo_acesso)) / (1000 * 60 * 60 * 24));
-            let num = (aluno.telefone_whatsapp || '').replace(/\D/g, ''); if (num.length >= 10) num = '55' + num;
-            const msg = `Olá *${aluno.nome_completo}*, notamos que *você não acessa a plataforma há ${dias} dias*. Vamos retomar seus estudos?\n\n🎓 *Acesse:* https://tutor-nova-eja.vercel.app\n👤 *Login:* ${aluno.email}\n🔑 *Senha:* Sesi@1234`;
-            return { aluno_id: aluno.id, aluno: aluno.nome_completo, email: aluno.email, dias_inativo: dias, mensagem_texto: msg, link_whatsapp: `https://wa.me/${num}?text=${encodeURIComponent(msg)}` };
-        });
-        res.json({ success: true, enviados: inativos.length, detalhes });
-    } catch (err) { res.status(500).json({ error: 'Erro na busca ativa.' }); }
+        // Verifica se já existe um aluno com o mesmo CPF e mesma Etapa
+        const { data: existente } = await supabase
+            .from('alunos')
+            .select('id')
+            .eq('cpf', cpf)
+            .eq('etapa', etapa)
+            .maybeSingle();
+
+        if (existente) {
+            return res.status(400).json({ error: 'Já existe um aluno cadastrado com este CPF nesta etapa.' });
+        }
+
+        // Criptografa a senha (padrão Sesi@1234)
+        const senha_hash = await bcrypt.hash(senha || 'Sesi@1234', 10);
+
+        const { data, error } = await supabase
+            .from('alunos')
+            .insert([{ 
+                nome_completo: nome, 
+                email, 
+                cpf, 
+                telefone_whatsapp, 
+                matricula, 
+                turma,
+                etapa,
+                senha: senha_hash
+            }])
+            .select()
+            .single();
+
+        if (error) throw error;
+        res.status(201).json(data);
+    } catch (err) {
+        console.error('Erro POST /api/alunos:', err);
+        res.status(500).json({ error: 'Erro ao criar aluno.' });
+    }
+});
+
+app.put('/api/alunos/:id', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { nome, email, telefone_whatsapp, matricula, turma, etapa } = req.body;
+        // Não atualizamos o CPF nem a senha aqui, conforme regra.
+
+        const { data, error } = await supabase
+            .from('alunos')
+            .update({ 
+                nome_completo: nome, 
+                email, 
+                telefone_whatsapp, 
+                matricula, 
+                turma,
+                etapa
+            })
+            .eq('id', id)
+            .select()
+            .single();
+
+        if (error) throw error;
+        res.json(data);
+    } catch (err) {
+        res.status(500).json({ error: 'Erro ao atualizar aluno.' });
+    }
+});
+
+// ============================================================
+// CONSULTAR ATIVIDADES DO ALUNO (Nova rota para o Coordenador)
+// ============================================================
+app.get('/api/consultar-atividades/:aluno_id', async (req, res) => {
+    try {
+        const { aluno_id } = req.params;
+        
+        const { data, error } = await supabase
+            .from('respostas_atividades')
+            .select(`
+                id,
+                nota,
+                status,
+                created_at,
+                atividades (
+                    enunciado,
+                    area
+                )
+            `)
+            .eq('aluno_id', aluno_id)
+            .order('created_at', { ascending: false });
+
+        if (error) throw error;
+        res.json(data);
+    } catch (err) {
+        res.status(500).json({ error: 'Erro ao consultar atividades.' });
+    }
 });
 
 app.post('/api/busca-ativa/registrar', async (req, res) => {
