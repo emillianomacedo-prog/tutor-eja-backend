@@ -64,15 +64,6 @@ function gerarNomeArquivo(originalName) {
     return `questoes/${timestamp}-${random}.${ext}`;
 }
 
-// Middleware simples de autenticação por header
-function autenticarAdmin(req, res, next) {
-    const token = req.headers['authorization']?.replace('Bearer ', '');
-    if (!token || token !== process.env.ADMIN_TOKEN) {
-        return res.status(401).json({ error: 'Não autorizado.' });
-    }
-    next();
-}
-
 // ============================================================
 // ROTA RAIZ (health check)
 // ============================================================
@@ -119,7 +110,7 @@ app.post('/api/upload-imagem', upload.single('imagem'), async (req, res) => {
 });
 
 // ============================================================
-// AUTENTICAÇÃO
+// AUTENTICAÇÃO DO COORDENADOR
 // ============================================================
 app.post('/api/login', async (req, res) => {
     try {
@@ -147,6 +138,51 @@ app.post('/api/login', async (req, res) => {
     } catch (err) {
         console.error('Erro /api/login:', err);
         return res.status(500).json({ error: 'Erro interno no login.' });
+    }
+});
+
+// ============================================================
+// AUTENTICAÇÃO DOS PROFESSORES (NOVO)
+// ============================================================
+app.post('/api/login-professor', async (req, res) => {
+    try {
+        const { email, senha } = req.body;
+        if (!email || !senha) {
+            return res.status(400).json({ error: 'E-mail e senha são obrigatórios.' });
+        }
+
+        // Busca o professor pelo e-mail
+        const { data: professor, error } = await supabase
+            .from('professores')
+            .select('*')
+            .eq('email', email)
+            .maybeSingle();
+
+        if (error) throw error;
+        if (!professor) {
+            return res.status(401).json({ error: 'E-mail ou senha inválidos.' });
+        }
+
+        // Verifica a senha usando bcrypt
+        const senhaValida = await bcrypt.compare(senha, professor.senha_hash);
+        if (!senhaValida) {
+            return res.status(401).json({ error: 'E-mail ou senha inválidos.' });
+        }
+
+        // Retorna os dados do professor (sem a senha)
+        return res.json({
+            success: true,
+            professor: { 
+                id: professor.id, 
+                nome: professor.nome, 
+                email: professor.email, 
+                area: professor.area 
+            }
+        });
+
+    } catch (err) {
+        console.error('Erro /api/login-professor:', err);
+        return res.status(500).json({ error: 'Erro interno no servidor.' });
     }
 });
 
