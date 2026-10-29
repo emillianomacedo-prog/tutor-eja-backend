@@ -5,7 +5,7 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
-const bcrypt = require('bcryptjs'); // Trocado para bcryptjs (mais seguro no Render)
+const bcrypt = require('bcryptjs');
 const { createClient } = require('@supabase/supabase-js');
 const multer = require('multer');
 
@@ -16,7 +16,7 @@ const PORT = process.env.PORT || 3000;
 // MIDDLEWARES GLOBAIS
 // ============================================================
 app.use(cors({
-    origin: process.env.FRONTEND_URL || '*', // Idealmente, defina a URL do Vercel no painel do Render
+    origin: process.env.FRONTEND_URL || '*',
     credentials: true
 }));
 app.use(express.json({ limit: '10mb' }));
@@ -36,11 +36,11 @@ if (!supabaseUrl || !supabaseServiceKey) {
 const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
 // ============================================================
-// CONFIGURAÇÃO MULTER (memória, para upload direto no Supabase)
+// CONFIGURAÇÃO MULTER
 // ============================================================
 const upload = multer({
     storage: multer.memoryStorage(),
-    limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
+    limits: { fileSize: 5 * 1024 * 1024 },
     fileFilter: (req, file, cb) => {
         const permitidos = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
         if (permitidos.includes(file.mimetype)) {
@@ -51,7 +51,6 @@ const upload = multer({
     }
 });
 
-// Nome do bucket no Supabase Storage
 const BUCKET_IMAGENS = 'atividades-imagens';
 
 // ============================================================
@@ -65,7 +64,7 @@ function gerarNomeArquivo(originalName) {
 }
 
 // ============================================================
-// ROTA RAIZ (health check)
+// ROTA RAIZ
 // ============================================================
 app.get('/', (req, res) => {
     res.json({ status: 'ok', service: 'Tutor IA - Nova EJA', timestamp: new Date().toISOString() });
@@ -76,10 +75,7 @@ app.get('/', (req, res) => {
 // ============================================================
 app.post('/api/upload-imagem', upload.single('imagem'), async (req, res) => {
     try {
-        if (!req.file) {
-            return res.status(400).json({ error: 'Nenhum arquivo enviado.' });
-        }
-
+        if (!req.file) return res.status(400).json({ error: 'Nenhum arquivo enviado.' });
         const filePath = gerarNomeArquivo(req.file.originalname);
 
         const { error: uploadError } = await supabase.storage
@@ -89,20 +85,13 @@ app.post('/api/upload-imagem', upload.single('imagem'), async (req, res) => {
                 upsert: false
             });
 
-        if (uploadError) {
-            console.error('Erro upload Supabase:', uploadError);
-            return res.status(500).json({ error: 'Falha ao enviar imagem para o Storage.' });
-        }
+        if (uploadError) throw uploadError;
 
         const { data: publicUrlData } = supabase.storage
             .from(BUCKET_IMAGENS)
             .getPublicUrl(filePath);
 
-        return res.json({
-            success: true,
-            url: publicUrlData.publicUrl,
-            path: filePath
-        });
+        return res.json({ success: true, url: publicUrlData.publicUrl, path: filePath });
     } catch (err) {
         console.error('Erro rota /api/upload-imagem:', err);
         return res.status(500).json({ error: 'Erro interno ao processar upload.' });
@@ -115,12 +104,10 @@ app.post('/api/upload-imagem', upload.single('imagem'), async (req, res) => {
 app.post('/api/login', async (req, res) => {
     try {
         const { email, senha } = req.body;
-        if (!email || !senha) {
-            return res.status(400).json({ error: 'Email e senha são obrigatórios.' });
-        }
+        if (!email || !senha) return res.status(400).json({ error: 'Email e senha são obrigatórios.' });
 
         const { data: usuario, error } = await supabase
-            .from('usuarios') // Ajuste o nome da tabela se necessário
+            .from('usuarios')
             .select('*')
             .eq('email', email)
             .maybeSingle();
@@ -128,12 +115,12 @@ app.post('/api/login', async (req, res) => {
         if (error) throw error;
         if (!usuario) return res.status(401).json({ error: 'Credenciais inválidas.' });
 
-        const senhaValida = await bcrypt.compare(senha, usuario.senha_hash);
+        const senhaValida = await bcrypt.compare(senha, usuario.senha_hash || usuario.senha);
         if (!senhaValida) return res.status(401).json({ error: 'Credenciais inválidas.' });
 
         return res.json({
             success: true,
-            usuario: { id: usuario.id, nome: usuario.nome, email: usuario.email, tipo: usuario.tipo }
+            usuario: { id: usuario.id, nome: usuario.nome || usuario.nome_completo, email: usuario.email, tipo: usuario.tipo }
         });
     } catch (err) {
         console.error('Erro /api/login:', err);
@@ -147,9 +134,7 @@ app.post('/api/login', async (req, res) => {
 app.post('/api/login-professor', async (req, res) => {
     try {
         const { email, senha } = req.body;
-        if (!email || !senha) {
-            return res.status(400).json({ error: 'E-mail e senha são obrigatórios.' });
-        }
+        if (!email || !senha) return res.status(400).json({ error: 'E-mail e senha são obrigatórios.' });
 
         const { data: professor, error } = await supabase
             .from('professores')
@@ -158,14 +143,10 @@ app.post('/api/login-professor', async (req, res) => {
             .maybeSingle();
 
         if (error) throw error;
-        if (!professor) {
-            return res.status(401).json({ error: 'E-mail ou senha inválidos.' });
-        }
+        if (!professor) return res.status(401).json({ error: 'E-mail ou senha inválidos.' });
 
         const senhaValida = await bcrypt.compare(senha, professor.senha_hash);
-        if (!senhaValida) {
-            return res.status(401).json({ error: 'E-mail ou senha inválidos.' });
-        }
+        if (!senhaValida) return res.status(401).json({ error: 'E-mail ou senha inválidos.' });
 
         return res.json({
             success: true,
@@ -176,7 +157,6 @@ app.post('/api/login-professor', async (req, res) => {
                 area: professor.area 
             }
         });
-
     } catch (err) {
         console.error('Erro /api/login-professor:', err);
         return res.status(500).json({ error: 'Erro interno no servidor.' });
@@ -188,15 +168,9 @@ app.post('/api/login-professor', async (req, res) => {
 // ============================================================
 app.post('/api/chat', async (req, res) => {
     try {
-        const { mensagem, historico = [], aluno_id, atividade_id } = req.body;
-
-        if (!mensagem) {
-            return res.status(400).json({ error: 'Mensagem é obrigatória.' });
-        }
-
-        // Chamada real da sua IA (OpenAI, Gemini, Groq, etc.)
+        const { mensagem } = req.body;
+        if (!mensagem) return res.status(400).json({ error: 'Mensagem é obrigatória.' });
         const respostaIA = `Resposta simulada para: "${mensagem}"`;
-
         return res.json({ resposta: respostaIA });
     } catch (err) {
         console.error('Erro /api/chat:', err);
@@ -212,7 +186,7 @@ app.get('/api/alunos', async (req, res) => {
         const { data, error } = await supabase
             .from('alunos')
             .select('*')
-            .order('nome', { ascending: true });
+            .order('nome_completo', { ascending: true });
         if (error) throw error;
         res.json(data);
     } catch (err) {
@@ -223,7 +197,7 @@ app.get('/api/alunos', async (req, res) => {
 
 app.post('/api/alunos', async (req, res) => {
     try {
-        const { nome, email, senha, matricula, turma } = req.body;
+        const { nome, email, senha, matricula, turma, cpf, telefone_whatsapp } = req.body;
         if (!nome || !email) {
             return res.status(400).json({ error: 'Nome e email são obrigatórios.' });
         }
@@ -232,7 +206,15 @@ app.post('/api/alunos', async (req, res) => {
 
         const { data, error } = await supabase
             .from('alunos')
-            .insert([{ nome, email, senha_hash, matricula, turma }])
+            .insert([{ 
+                nome_completo: nome,
+                email, 
+                senha: senha_hash,
+                cpf,
+                telefone_whatsapp,
+                matricula, 
+                turma 
+            }])
             .select()
             .single();
 
@@ -247,11 +229,18 @@ app.post('/api/alunos', async (req, res) => {
 app.put('/api/alunos/:id', async (req, res) => {
     try {
         const { id } = req.params;
-        const { nome, email, matricula, turma } = req.body;
+        const { nome, email, matricula, turma, cpf, telefone_whatsapp } = req.body;
 
         const { data, error } = await supabase
             .from('alunos')
-            .update({ nome, email, matricula, turma })
+            .update({ 
+                nome_completo: nome,
+                email, 
+                matricula, 
+                turma, 
+                cpf, 
+                telefone_whatsapp 
+            })
             .eq('id', id)
             .select()
             .single();
@@ -281,10 +270,7 @@ app.delete('/api/alunos/:id', async (req, res) => {
 // ============================================================
 app.get('/api/murais', async (req, res) => {
     try {
-        const { data, error } = await supabase
-            .from('murais')
-            .select('*')
-            .order('created_at', { ascending: false });
+        const { data, error } = await supabase.from('murais').select('*').order('created_at', { ascending: false });
         if (error) throw error;
         res.json(data);
     } catch (err) {
@@ -296,14 +282,8 @@ app.get('/api/murais', async (req, res) => {
 app.post('/api/murais', async (req, res) => {
     try {
         const { titulo, conteudo, autor } = req.body;
-        if (!titulo || !conteudo) {
-            return res.status(400).json({ error: 'Título e conteúdo são obrigatórios.' });
-        }
-        const { data, error } = await supabase
-            .from('murais')
-            .insert([{ titulo, conteudo, autor }])
-            .select()
-            .single();
+        if (!titulo || !conteudo) return res.status(400).json({ error: 'Título e conteúdo são obrigatórios.' });
+        const { data, error } = await supabase.from('murais').insert([{ titulo, conteudo, autor }]).select().single();
         if (error) throw error;
         res.status(201).json(data);
     } catch (err) {
@@ -331,10 +311,7 @@ app.get('/api/atividades', async (req, res) => {
     try {
         const { data, error } = await supabase
             .from('atividades')
-            .select(`
-                *,
-                respostas_atividades (count)
-            `)
+            .select(`*, respostas_atividades (count)`)
             .eq('ativa', true)
             .order('id', { ascending: false });
 
@@ -355,11 +332,7 @@ app.get('/api/atividades', async (req, res) => {
 app.get('/api/atividades/:id', async (req, res) => {
     try {
         const { id } = req.params;
-        const { data, error } = await supabase
-            .from('atividades')
-            .select('*')
-            .eq('id', id)
-            .single();
+        const { data, error } = await supabase.from('atividades').select('*').eq('id', id).single();
         if (error) throw error;
         res.json(data);
     } catch (err) {
@@ -368,39 +341,14 @@ app.get('/api/atividades/:id', async (req, res) => {
     }
 });
 
-// CRIAR ATIVIDADE (Atualizado: com etapa, sem rubrica, alternativas em JSON)
 app.post('/api/atividades', async (req, res) => {
     try {
-        const {
-            etapa, // NOVO
-            competencia,
-            habilidade_codigo,
-            area,
-            tipo,
-            enunciado,
-            alternativas,
-            gabarito,
-            imagem_url
-        } = req.body;
-
-        if (!enunciado) {
-            return res.status(400).json({ error: 'Enunciado é obrigatório.' });
-        }
+        const { etapa, competencia, habilidade_codigo, area, tipo, enunciado, alternativas, gabarito, imagem_url } = req.body;
+        if (!enunciado) return res.status(400).json({ error: 'Enunciado é obrigatório.' });
 
         const { data, error } = await supabase
             .from('atividades')
-            .insert([{
-                etapa, // NOVO
-                competencia,
-                habilidade_codigo,
-                area,
-                tipo,
-                enunciado,
-                alternativas,
-                gabarito,
-                imagem_url: imagem_url || null,
-                ativa: true
-            }])
+            .insert([{ etapa, competencia, habilidade_codigo, area, tipo, enunciado, alternativas, gabarito, imagem_url: imagem_url || null, ativa: true }])
             .select()
             .single();
 
@@ -415,33 +363,11 @@ app.post('/api/atividades', async (req, res) => {
 app.put('/api/atividades/:id', async (req, res) => {
     try {
         const { id } = req.params;
-        const {
-            etapa,
-            competencia,
-            habilidade_codigo,
-            area,
-            tipo,
-            enunciado,
-            alternativas,
-            gabarito,
-            imagem_url,
-            ativa
-        } = req.body;
+        const { etapa, competencia, habilidade_codigo, area, tipo, enunciado, alternativas, gabarito, imagem_url, ativa } = req.body;
 
         const { data, error } = await supabase
             .from('atividades')
-            .update({
-                etapa,
-                competencia,
-                habilidade_codigo,
-                area,
-                tipo,
-                enunciado,
-                alternativas,
-                gabarito,
-                imagem_url,
-                ativa
-            })
+            .update({ etapa, competencia, habilidade_codigo, area, tipo, enunciado, alternativas, gabarito, imagem_url, ativa })
             .eq('id', id)
             .select()
             .single();
@@ -469,16 +395,11 @@ app.delete('/api/atividades/:id', async (req, res) => {
 // ============================================================
 // RESPOSTAS DE ATIVIDADES
 // ============================================================
-
-// ROTA: Aluno responde atividade (Correção automática se for objetiva)
 app.post('/api/respostas', async (req, res) => {
     try {
         const { atividade_id, aluno_id, resposta } = req.body;
-        if (!atividade_id || !aluno_id) {
-            return res.status(400).json({ error: 'atividade_id e aluno_id são obrigatórios.' });
-        }
+        if (!atividade_id || !aluno_id) return res.status(400).json({ error: 'atividade_id e aluno_id são obrigatórios.' });
 
-        // Busca a atividade para saber o tipo e o gabarito
         const { data: atividade, error: errorAtv } = await supabase
             .from('atividades')
             .select('tipo, gabarito')
@@ -491,24 +412,15 @@ app.post('/api/respostas', async (req, res) => {
         let status = 'pendente';
         let nota = null;
 
-        // Se for objetiva, corrige na hora
         if (atividade.tipo === 'objetiva') {
             correta = (resposta === atividade.gabarito);
             nota = correta ? 100 : 0;
             status = correta ? 'corrigida' : 'refazer';
         }
-        // Se for subjetiva, fica pendente até o professor lançar a nota
 
         const { data, error } = await supabase
             .from('respostas_atividades')
-            .insert([{ 
-                atividade_id, 
-                aluno_id, 
-                resposta, 
-                correta, 
-                nota, 
-                status 
-            }])
+            .insert([{ atividade_id, aluno_id, resposta, correta, nota, status }])
             .select()
             .single();
 
@@ -520,26 +432,17 @@ app.post('/api/respostas', async (req, res) => {
     }
 });
 
-// ROTA: Professor lança nota de atividade subjetiva
 app.put('/api/respostas/:id/corrigir', async (req, res) => {
     try {
         const { id } = req.params;
         const { nota } = req.body;
+        if (nota === undefined) return res.status(400).json({ error: 'A nota é obrigatória.' });
 
-        if (nota === undefined) {
-            return res.status(400).json({ error: 'A nota é obrigatória.' });
-        }
-
-        // REGRA DE NEGÓCIO: Nota abaixo de 60 = refazer
         const status = nota >= 60 ? 'corrigida' : 'refazer';
 
         const { data, error } = await supabase
             .from('respostas_atividades')
-            .update({ 
-                nota: nota, 
-                status: status,
-                correta: nota >= 60 // Define se acertou ou não para estatísticas
-            })
+            .update({ nota: nota, status: status, correta: nota >= 60 })
             .eq('id', id)
             .select()
             .single();
@@ -552,7 +455,6 @@ app.put('/api/respostas/:id/corrigir', async (req, res) => {
     }
 });
 
-// ROTA: Listar respostas de um aluno
 app.get('/api/respostas/:aluno_id', async (req, res) => {
     try {
         const { aluno_id } = req.params;
@@ -574,10 +476,7 @@ app.get('/api/respostas/:aluno_id', async (req, res) => {
 // ============================================================
 app.get('/api/habilidades', async (req, res) => {
     try {
-        const { data, error } = await supabase
-            .from('catalogo_habilidades')
-            .select('*')
-            .order('codigo', { ascending: true });
+        const { data, error } = await supabase.from('catalogo_habilidades').select('*').order('codigo', { ascending: true });
         if (error) throw error;
         res.json(data);
     } catch (err) {
@@ -587,20 +486,58 @@ app.get('/api/habilidades', async (req, res) => {
 });
 
 // ============================================================
-// MATRÍCULAS EM ESTUDOS
+// ROTINA DE NOTIFICAÇÕES (BUSCA ATIVA)
 // ============================================================
-app.get('/api/matriculas/:aluno_id', async (req, res) => {
+async function verificarAlunosInativos() {
     try {
-        const { aluno_id } = req.params;
-        const { data, error } = await supabase
-            .from('matriculas_estudos')
-            .select('*')
-            .eq('aluno_id', aluno_id);
+        const cincoDiasAtras = new Date();
+        cincoDiasAtras.setDate(cincoDiasAtras.getDate() - 5);
+        const dataLimite = cincoDiasAtras.toISOString();
+
+        const { data: alunosInativos, error } = await supabase
+            .from('alunos')
+            .select('id, nome_completo, email, ultimo_acesso')
+            .lt('ultimo_acesso', dataLimite);
+
         if (error) throw error;
-        res.json(data);
+
+        if (alunosInativos.length === 0) {
+            console.log('✅ Nenhum aluno inativo há mais de 5 dias.');
+            return { success: true, mensagem: 'Nenhum aluno inativo.', enviados: 0 };
+        }
+
+        console.log(`⚠️ Encontrados ${alunosInativos.length} aluno(s) inativo(s).`);
+        
+        const mensagensEnviadas = alunosInativos.map(aluno => {
+            console.log(`📧 [SIMULAÇÃO] Enviando mensagem para ${aluno.nome_completo} (${aluno.email})`);
+            return {
+                aluno: aluno.nome_completo,
+                email: aluno.email,
+                ultimo_acesso: aluno.ultimo_acesso,
+                mensagem: 'Enviada com sucesso (Simulada)'
+            };
+        });
+
+        return { 
+            success: true, 
+            mensagem: `Notificações processadas para ${alunosInativos.length} aluno(s).`,
+            enviados: alunosInativos.length,
+            detalhes: mensagensEnviadas
+        };
+
     } catch (err) {
-        console.error('Erro GET /api/matriculas:', err);
-        res.status(500).json({ error: 'Erro ao listar matrículas.' });
+        console.error('Erro na rotina de inativos:', err);
+        throw err;
+    }
+}
+
+// Rota de teste para a Busca Ativa
+app.get('/api/admin/testar-notificacoes', async (req, res) => {
+    try {
+        const resultado = await verificarAlunosInativos();
+        res.json(resultado);
+    } catch (err) {
+        res.status(500).json({ error: 'Erro ao testar notificações.' });
     }
 });
 
@@ -609,9 +546,7 @@ app.get('/api/matriculas/:aluno_id', async (req, res) => {
 // ============================================================
 app.use((err, req, res, next) => {
     if (err instanceof multer.MulterError) {
-        if (err.code === 'LIMIT_FILE_SIZE') {
-            return res.status(400).json({ error: 'Imagem muito grande. Máximo 5MB.' });
-        }
+        if (err.code === 'LIMIT_FILE_SIZE') return res.status(400).json({ error: 'Imagem muito grande. Máximo 5MB.' });
         return res.status(400).json({ error: `Erro no upload: ${err.message}` });
     }
     if (err && err.message && err.message.includes('Formato de imagem')) {
