@@ -494,9 +494,10 @@ async function verificarAlunosInativos() {
         cincoDiasAtras.setDate(cincoDiasAtras.getDate() - 5);
         const dataLimite = cincoDiasAtras.toISOString();
 
+        // BUSCA O TELEFONE JUNTO COM OS DADOS
         const { data: alunosInativos, error } = await supabase
             .from('alunos')
-            .select('id, nome_completo, email, ultimo_acesso')
+            .select('id, nome_completo, email, telefone_whatsapp, ultimo_acesso')
             .lt('ultimo_acesso', dataLimite);
 
         if (error) throw error;
@@ -509,18 +510,30 @@ async function verificarAlunosInativos() {
         console.log(`⚠️ Encontrados ${alunosInativos.length} aluno(s) inativo(s).`);
         
         const mensagensEnviadas = alunosInativos.map(aluno => {
-            console.log(`📧 [SIMULAÇÃO] Enviando mensagem para ${aluno.nome_completo} (${aluno.email})`);
+            // Prepara o telefone
+            let numeroLimpo = (aluno.telefone_whatsapp || '').replace(/\D/g, ''); 
+            
+            // Adiciona o 55 se necessário
+            if (numeroLimpo.length === 10 || numeroLimpo.length === 11) {
+                numeroLimpo = '55' + numeroLimpo;
+            }
+
+            // Monta a mensagem e o link
+            const textoMensagem = encodeURIComponent(`Olá ${aluno.nome_completo}, notamos que você não acessa a plataforma há 5 dias. Vamos retomar seus estudos?`);
+            const linkWhatsApp = `https://wa.me/${numeroLimpo}?text=${textoMensagem}`;
+
             return {
                 aluno: aluno.nome_completo,
                 email: aluno.email,
-                ultimo_acesso: aluno.ultimo_acesso,
-                mensagem: 'Enviada com sucesso (Simulada)'
+                telefone: aluno.telefone_whatsapp,
+                link_whatsapp: linkWhatsApp,
+                mensagem: 'Link gerado com sucesso'
             };
         });
 
         return { 
             success: true, 
-            mensagem: `Notificações processadas para ${alunosInativos.length} aluno(s).`,
+            mensagem: `Links gerados para ${alunosInativos.length} aluno(s).`,
             enviados: alunosInativos.length,
             detalhes: mensagensEnviadas
         };
