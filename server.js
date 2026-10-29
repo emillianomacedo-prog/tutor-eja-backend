@@ -351,5 +351,38 @@ app.get('/api/busca-ativa/relatorio/:id', async (req, res) => {
     const { data: historico } = await supabase.from('historico_busca_ativa').select('*').eq('aluno_id', req.params.id).order('data_envio', { ascending: false });
     res.json({ aluno, historico });
 });
+// ============================================================
+// ROTA DE RESPOSTAS DO ALUNO (Faltante)
+// ============================================================
+app.get('/api/respostas/:aluno_id', async (req, res) => {
+    try {
+        const { aluno_id } = req.params;
+        
+        // Busca as respostas do aluno e junta com a tabela de atividades
+        const { data, error } = await supabase
+            .from('respostas_atividades')
+            .select(`
+                id,
+                nota,
+                status,
+                created_at,
+                atividade_id,
+                atividades (
+                    enunciado,
+                    area
+                )
+            `)
+            .eq('aluno_id', aluno_id)
+            .order('created_at', { ascending: false });
+
+        if (error) throw error;
+        
+        // O Supabase já retorna o join no campo 'atividades', que é o que o frontend espera.
+        res.json(data);
+    } catch (err) {
+        console.error('Erro GET /api/respostas:', err);
+        res.status(500).json({ erro: 'Erro ao listar respostas.' });
+    }
+});
 
 app.listen(PORT, () => console.log(`🚀 Rodando na porta ${PORT}`));
