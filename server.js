@@ -41,8 +41,8 @@ const supabase = createClient(supabaseUrl, supabaseServiceKey);
 // ============================================================
 const transporter = nodemailer.createTransport({
     host: 'smtp.gmail.com',
-    port: 587,
-    secure: false, // <-- Faltava esta vírgula aqui!
+    port: 465,
+    secure: true, // <-- Faltava esta vírgula aqui!
     auth: {
         user: process.env.EMAIL_USER,
         pass: process.env.EMAIL_PASS
