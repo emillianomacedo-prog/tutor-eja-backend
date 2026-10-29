@@ -275,11 +275,57 @@ app.get('/api/atividades', async (req, res) => {
     } catch (err) { res.status(500).json({ error: 'Erro.' }); }
 });
 
+// ============================================================
+// CRIAR ATIVIDADE (CORRIGIDO)
+// ============================================================
 app.post('/api/atividades', async (req, res) => {
     try {
-        const { data, error } = await supabase.from('atividades').insert([{ ...req.body, ativa: true }]).select().single();
-        if (error) throw error; res.status(201).json(data);
-    } catch (err) { res.status(500).json({ error: 'Erro.' }); }
+        const { 
+            etapa, 
+            competencia, 
+            habilidade_codigo, 
+            area, 
+            tipo, 
+            enunciado, 
+            alternativas, 
+            gabarito, 
+            imagem_url 
+        } = req.body;
+        
+        if (!enunciado) {
+            return res.status(400).json({ error: 'Enunciado é obrigatório.' });
+        }
+
+        // Garante que alternativas vazio seja enviado como null para o banco
+        const alternativasParaSalvar = (tipo === 'objetiva' && alternativas) ? alternativas : null;
+
+        const { data, error } = await supabase
+            .from('atividades')
+            .insert([{ 
+                etapa, 
+                competencia, 
+                habilidade_codigo, 
+                area, 
+                tipo, 
+                enunciado, 
+                alternativas: alternativasParaSalvar, 
+                gabarito: gabarito || null, 
+                imagem_url: imagem_url || null, 
+                ativa: true 
+            }])
+            .select()
+            .single();
+
+        if (error) {
+            console.error('Erro Supabase ao criar atividade:', error);
+            throw error;
+        }
+        
+        res.status(201).json(data);
+    } catch (err) {
+        console.error('Erro POST /api/atividades:', err);
+        res.status(500).json({ error: err.message || 'Erro ao criar atividade.' });
+    }
 });
 
 app.get('/api/atividades/:id', async (req, res) => {
