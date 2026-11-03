@@ -253,18 +253,15 @@ app.get('/api/atividades', async (req, res) => {
   } catch (err) { return res.status(500).json({ erro: 'Erro ao listar', detalhe: err.message }); }
 });
 
-// LISTAR ATIVIDADES DO PROFESSOR (Filtrado por área)
 app.get('/api/admin/minhas-atividades', verificarToken, async (req, res) => {
   try {
-    // Descobre o token para pegar a área do professor logado
     const token = req.headers.authorization?.split(' ')[1];
-    const coordId = token.split('_')[1]; // O token é "prof_ID_timestamp"
+    const coordId = token.split('_')[1];
 
     const { data: coord } = await supabase.from('coordenadores').select('area, papel').eq('id', coordId).single();
     
     let query = supabase.from('atividades').select('*').order('created_at', { ascending: false });
     
-    // Se não for coordenador geral, filtra pela área dele
     if (coord && coord.papel === 'professor' && coord.area) {
       query = query.eq('area', coord.area);
     }
@@ -275,7 +272,6 @@ app.get('/api/admin/minhas-atividades', verificarToken, async (req, res) => {
   } catch (err) { return res.status(500).json({ erro: 'Erro ao listar atividades' }); }
 });
 
-// BUSCAR ATIVIDADE ESPECÍFICA (Para Edição)
 app.get('/api/admin/atividade/:id', verificarToken, async (req, res) => {
   try {
     const { data, error } = await supabase.from('atividades').select('*').eq('id', req.params.id).single();
@@ -334,15 +330,15 @@ app.post('/api/atividades/:id/responder', async (req, res) => {
 });
 
 app.post('/api/atividades', verificarToken, async (req, res) => {
-  const { competencia, habilidade_codigo, area, tipo, enunciado, imagem_url, alternativas, gabarito, rubrica_ia } = req.body;
-  if (!competencia || !habilidade_codigo || !area || !tipo || !enunciado) return res.status(400).json({ erro: 'Campos obrigatórios' });
+  const { competencia, habilidade_codigo, area, segmento, tipo, enunciado, imagem_url, alternativas, gabarito, rubrica_ia } = req.body;
+  if (!competencia || !habilidade_codigo || !area || !segmento || !tipo || !enunciado) return res.status(400).json({ erro: 'Campos obrigatórios' });
   if (tipo === 'objetiva' && (!alternativas || !gabarito)) return res.status(400).json({ erro: 'Objetiva exige alternativas' });
   try {
     const token = req.headers.authorization?.split(' ')[1];
     const coordId = token.split('_')[1];
     
     const { data, error } = await supabase.from('atividades').insert({ 
-      competencia, habilidade_codigo, area, tipo, enunciado, imagem_url: imagem_url || null, alternativas: alternativas || null, gabarito: gabarito || null, rubrica_ia: rubrica_ia || null, professor_id: coordId 
+      competencia, habilidade_codigo, area, segmento, tipo, enunciado, imagem_url: imagem_url || null, alternativas: alternativas || null, gabarito: gabarito || null, rubrica_ia: rubrica_ia || null, professor_id: coordId 
     }).select().single();
     if (error) throw error;
     return res.status(201).json({ atividade: data });
@@ -350,10 +346,10 @@ app.post('/api/atividades', verificarToken, async (req, res) => {
 });
 
 app.put('/api/atividades/:id', verificarToken, async (req, res) => {
-  const { competencia, habilidade_codigo, area, tipo, enunciado, imagem_url, alternativas, gabarito, rubrica_ia } = req.body;
+  const { competencia, habilidade_codigo, area, segmento, tipo, enunciado, imagem_url, alternativas, gabarito, rubrica_ia } = req.body;
   try {
     const { data, error } = await supabase.from('atividades').update({ 
-      competencia, habilidade_codigo, area, tipo, enunciado, imagem_url: imagem_url || null, alternativas: alternativas || null, gabarito: gabarito || null, rubrica_ia: rubrica_ia || null 
+      competencia, habilidade_codigo, area, segmento, tipo, enunciado, imagem_url: imagem_url || null, alternativas: alternativas || null, gabarito: gabarito || null, rubrica_ia: rubrica_ia || null 
     }).eq('id', req.params.id).select().single();
     if (error) throw error;
     return res.json({ atividade: data });
