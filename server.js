@@ -194,13 +194,35 @@ app.post('/api/login', async (req, res) => {
   } catch (e) { return res.status(500).json({ erro: "Erro interno." }); }
 });
 
+// LOGIN DO PROFESSOR / COORDENADOR (Validação direta no banco)
 app.post('/api/admin/login', async (req, res) => {
   const { email, password } = req.body;
   try {
-    const { data: authData, error: authError } = await supabase.auth.signInWithPassword({ email, password });
-    if (authError) return res.status(401).json({ erro: "E-mail ou senha inválidos." });
-    return res.json({ mensagem: "Login realizado com sucesso", token: authData.session.access_token, nome: "Coordenador/Professor" });
-  } catch (error) { return res.status(500).json({ erro: "Erro interno no login." }); }
+    const { data: coord, error } = await supabase
+      .from('coordenadores')
+      .select('id, nome, email, senha, papel, area')
+      .eq('email', email)
+      .maybeSingle();
+
+    if (error || !coord) return res.status(401).json({ erro: "E-mail não cadastrado." });
+    if (!coord.senha) return res.status(401).json({ erro: "Senha não configurada. Contate o administrador." });
+
+    const senhaCorreta = await bcrypt.compare(password, coord.senha);
+    if (!senhaCorreta) return res.status(401).json({ erro: "Senha incorreta." });
+
+    const fakeToken = `prof_${coord.id}_${Date.now()}`;
+
+    return res.json({ 
+      mensagem: "Login realizado com sucesso", 
+      token: fakeToken, 
+      nome: coord.nome,
+      papel: coord.papel,
+      area: coord.area
+    });
+  } catch (error) { 
+    console.error("Erro no login:", error);
+    return res.status(500).json({ erro: "Erro interno no login." }); 
+  }
 });
 
 function verificarToken(req, res, next) {
@@ -221,54 +243,29 @@ app.get('/api/atividades', async (req, res) => {
     const alunoIdReal = await resolverAlunoId(aluno_id);
     if (!alunoIdReal) return res.status(404).json({ erro: 'Aluno não encontrado' });
     
-    // 1. Busca a matrícula do aluno
-    const { data: matricula } = await supabase
-      .from('matriculas_estudos')
-      .select('id')
-      .eq('aluno_id', alunoIdReal)
-      .eq('status', 'ativa')
-      .maybeSingle();
+    const { data: matricula } = await supabase.from('matriculas_estudos').select('id').eq('aluno_id', alunoIdReal).eq('status', 'ativa').maybeSingle();
 
-    // 2. Busca as habilidades que o aluno foi DISPENSADO
     let habilidadesDispensadas = [];
     if (matricula) {
-      const { data: dispensadas } = await supabase
-        .from('habilidades_dispensadas')
-        .select('habilidade_codigo')
-        .eq('matricula_id', matricula.id);
-      
+      const { data: dispensadas } = await supabase.from('habilidades_dispensadas').select('habilidade_codigo').eq('matricula_id', matricula.id);
       if (dispensadas) habilidadesDispensadas = dispensadas.map(h => h.habilidade_codigo);
     }
 
-    // 3. Busca as atividades da competência e área, ORDENANDO POR HABILIDADE (H1, H2...)
     const { data: atividades, error } = await supabase.from('atividades')
       .select('id, competencia, habilidade_codigo, area, tipo, enunciado, alternativas, imagem_url, pontuacao_max')
-      .eq('competencia', competencia)
-      .eq('area', area)
-      .eq('ativa', true)
+      .eq('competencia', competencia).eq('area', area).eq('ativa', true)
       .order('habilidade_codigo', { ascending: true }); 
       
     if (error) throw error;
     if (!atividades || atividades.length === 0) return res.json({ atividades: [] });
 
-    // 4. Filtra as atividades removendo as que o aluno já tem dispensadas
-    const atividadesPermitidas = atividades.filter(a => 
-      !habilidadesDispensadas.includes(a.habilidade_codigo)
-    );
-
+    const atividadesPermitidas = atividades.filter(a => !habilidadesDispensadas.includes(a.habilidade_codigo));
     if (atividadesPermitidas.length === 0) return res.json({ atividades: [] });
     
-    // 5. Busca as respostas do aluno para essas atividades
     const ids = atividadesPermitidas.map(a => a.id);
-    const { data: respostas } = await supabase
-      .from('respostas_atividades')
-      .select('atividade_id, status, nota, tentativas, feedback, arquivo_url')
-      .eq('aluno_id', alunoIdReal)
-      .in('atividade_id', ids);
-      
+    const { data: respostas } = await supabase.from('respostas_atividades').select('atividade_id, status, nota, tentativas, feedback, arquivo_url').eq('aluno_id', alunoIdReal).in('atividade_id', ids);
     const mapa = Object.fromEntries((respostas || []).map(r => [r.atividade_id, r]));
     
-    // 6. Trata as alternativas e monta o objeto final
     const atividadesTratadas = atividadesPermitidas.map(a => {
       let alternativasTratadas = [];
       if (a.alternativas) {
