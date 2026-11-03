@@ -9,7 +9,7 @@ const nodemailer = require('nodemailer');
 
 const app = express();
 app.use(cors());
-app.use(express.json({ limit: '10mb' })); // Aumentado para suportar imagens em Base64
+app.use(express.json({ limit: '10mb' })); // Limite alto para imagens em Base64
 
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
@@ -231,14 +231,32 @@ app.get('/api/atividades', async (req, res) => {
     const { data: respostas } = await supabase.from('respostas_atividades').select('atividade_id, status, nota, tentativas, feedback, arquivo_url').eq('aluno_id', alunoIdReal).in('atividade_id', ids);
     const mapa = Object.fromEntries((respostas || []).map(r => [r.atividade_id, r]));
     
-    return res.json({ atividades: atividades.map(a => ({ 
-      ...a, 
-      status: mapa[a.id]?.status || 'INICIAR', 
-      nota: mapa[a.id]?.nota ?? null, 
-      tentativas: mapa[a.id]?.tentativas || 0, 
-      feedback: mapa[a.id]?.feedback || null,
-      arquivo_url: mapa[a.id]?.arquivo_url || null
-    })) });
+    // TRATAMENTO DAS ALTERNATIVAS: Converte qualquer formato para o padrão
+    const atividadesTratadas = atividades.map(a => {
+      let alternativasTratadas = [];
+      if (a.alternativas) {
+        try {
+          let alt = typeof a.alternativas === 'string' ? JSON.parse(a.alternativas) : a.alternativas;
+          if (Array.isArray(alt) && alt.length > 0 && typeof alt[0] === 'object') {
+            alternativasTratadas = alt;
+          } else if (Array.isArray(alt)) {
+            alternativasTratadas = alt.map((txt, index) => ({ letra: String.fromCharCode(97 + index), texto: txt }));
+          }
+        } catch (e) { console.error("Erro ao ler alternativas", a.id, e); }
+      }
+
+      return {
+        ...a,
+        alternativas: alternativasTratadas,
+        status: mapa[a.id]?.status || 'INICIAR',
+        nota: mapa[a.id]?.nota ?? null,
+        tentativas: mapa[a.id]?.tentativas || 0,
+        feedback: mapa[a.id]?.feedback || null,
+        arquivo_url: mapa[a.id]?.arquivo_url || null
+      };
+    });
+    
+    return res.json({ atividades: atividadesTratadas });
   } catch (err) { return res.status(500).json({ erro: 'Erro ao listar atividades', detalhe: err.message }); }
 });
 
