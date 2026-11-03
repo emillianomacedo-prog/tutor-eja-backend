@@ -216,23 +216,60 @@ function verificarToken(req, res, next) {
 app.get('/api/atividades', async (req, res) => {
   const { competencia, area, aluno_id } = req.query;
   if (!competencia || !area || !aluno_id) return res.status(400).json({ erro: 'competencia, area e aluno_id são obrigatórios' });
+  
   try {
     const alunoIdReal = await resolverAlunoId(aluno_id);
     if (!alunoIdReal) return res.status(404).json({ erro: 'Aluno não encontrado' });
     
+    // 1. Busca a matrícula do aluno
+    const { data: matricula } = await supabase
+      .from('matriculas_estudos')
+      .select('id')
+      .eq('aluno_id', alunoIdReal)
+      .eq('status', 'ativa')
+      .maybeSingle();
+
+    // 2. Busca as habilidades que o aluno foi DISPENSADO
+    let habilidadesDispensadas = [];
+    if (matricula) {
+      const { data: dispensadas } = await supabase
+        .from('habilidades_dispensadas')
+        .select('habilidade_codigo')
+        .eq('matricula_id', matricula.id);
+      
+      if (dispensadas) habilidadesDispensadas = dispensadas.map(h => h.habilidade_codigo);
+    }
+
+    // 3. Busca as atividades da competência e área, ORDENANDO POR HABILIDADE (H1, H2...)
     const { data: atividades, error } = await supabase.from('atividades')
       .select('id, competencia, habilidade_codigo, area, tipo, enunciado, alternativas, imagem_url, pontuacao_max')
-      .eq('competencia', competencia).eq('area', area).eq('ativa', true).order('created_at');
+      .eq('competencia', competencia)
+      .eq('area', area)
+      .eq('ativa', true)
+      .order('habilidade_codigo', { ascending: true }); 
       
     if (error) throw error;
     if (!atividades || atividades.length === 0) return res.json({ atividades: [] });
+
+    // 4. Filtra as atividades removendo as que o aluno já tem dispensadas
+    const atividadesPermitidas = atividades.filter(a => 
+      !habilidadesDispensadas.includes(a.habilidade_codigo)
+    );
+
+    if (atividadesPermitidas.length === 0) return res.json({ atividades: [] });
     
-    const ids = atividades.map(a => a.id);
-    const { data: respostas } = await supabase.from('respostas_atividades').select('atividade_id, status, nota, tentativas, feedback, arquivo_url').eq('aluno_id', alunoIdReal).in('atividade_id', ids);
+    // 5. Busca as respostas do aluno para essas atividades
+    const ids = atividadesPermitidas.map(a => a.id);
+    const { data: respostas } = await supabase
+      .from('respostas_atividades')
+      .select('atividade_id, status, nota, tentativas, feedback, arquivo_url')
+      .eq('aluno_id', alunoIdReal)
+      .in('atividade_id', ids);
+      
     const mapa = Object.fromEntries((respostas || []).map(r => [r.atividade_id, r]));
     
-    // TRATAMENTO DAS ALTERNATIVAS: Converte qualquer formato para o padrão
-    const atividadesTratadas = atividades.map(a => {
+    // 6. Trata as alternativas e monta o objeto final
+    const atividadesTratadas = atividadesPermitidas.map(a => {
       let alternativasTratadas = [];
       if (a.alternativas) {
         try {
