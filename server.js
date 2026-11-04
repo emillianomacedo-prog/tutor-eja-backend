@@ -230,10 +230,12 @@ app.get('/api/atividades', async (req, res) => {
       const { data: dispensadas } = await supabase.from('habilidades_dispensadas').select('habilidade_codigo').eq('matricula_id', matricula.id);
       if (dispensadas) habilidadesDispensadas = dispensadas.map(h => h.habilidade_codigo);
     }
-    const { data: atividades, error } = await supabase.from('atividades').select('id, competencia, habilidade_codigo, area, tipo, enunciado, alternativas, imagem_url, pontuacao_max').eq('competencia', competencia).eq('area', area).eq('ativa', true).order('habilidade_codigo', { ascending: true }); 
+    const { data: atividades, error } = await supabase.from('atividades').select('id, competencia, habilidade_codigo, area, tipo, enunciado, alternativas, imagem_url, pontuacao_max').eq('competencia', competencia).eq('area', area).eq('ativa', true);  
     if (error) throw error;
     if (!atividades || atividades.length === 0) return res.json({ atividades: [] });
     const atividadesPermitidas = atividades.filter(a => !habilidadesDispensadas.includes(a.habilidade_codigo));
+    // Ordena as habilidades corretamente (C1H1, C1H2, C1H3...)
+    atividadesPermitidas.sort((a, b) => a.habilidade_codigo.localeCompare(b.habilidade_codigo, undefined, { numeric: true }));
     if (atividadesPermitidas.length === 0) return res.json({ atividades: [] });
     const ids = atividadesPermitidas.map(a => a.id);
     const { data: respostas } = await supabase.from('respostas_atividades').select('atividade_id, status, nota, tentativas, feedback, arquivo_url').eq('aluno_id', alunoIdReal).in('atividade_id', ids);
@@ -393,12 +395,29 @@ app.post('/api/admin/corrigir-atividade/:resposta_id', verificarToken, async (re
 app.get('/api/aluno/:matricula_id/habilidades', async (req, res) => {
   const { matricula_id } = req.params;
   try {
+    // 1. Pega o segmento e as dispensadas da matrícula
     const { data: matricula } = await supabase.from('matriculas_estudos').select('segmento').eq('id', matricula_id).single();
-    if (!matricula) return res.status(404).json({ erro: "Erro" });
-    const { data: catalogo, error: errCat } = await supabase.from('catalogo_habilidades').select('habilidade_codigo, area, competencia, descricao').eq('segmento', matricula.segmento).order('habilidade_codigo');
+    if (!matricula) return res.status(404).json({ erro: "Matrícula não encontrada" });
+    
+    const { data: dispensadas } = await supabase.from('habilidades_dispensadas').select('habilidade_codigo, area').eq('matricula_id', matricula_id);
+    const dispensadasSet = new Set((dispensadas || []).map(d => `${d.area}_${d.habilidade_codigo}`));
+
+    // 2. Pega o catálogo do segmento
+    const { data: catalogo, error: errCat } = await supabase.from('catalogo_habilidades').select('habilidade_codigo, area, competencia, descricao').eq('segmento', matricula.segmento);
     if (errCat) throw errCat;
-    return res.json(catalogo);
-  } catch (err) { return res.status(500).json({ erro: "Erro" }); }
+
+    // 3. Filtra as que o aluno não tem dispensa
+    const catalogoFiltrado = catalogo.filter(h => !dispensadasSet.has(`${h.area}_${h.habilidade_codigo}`));
+
+    // 4. Ordena pela área, depois competência e depois habilidade (alfanumérico correto)
+    catalogoFiltrado.sort((a, b) => {
+      if (a.area !== b.area) return a.area.localeCompare(b.area);
+      if (a.competencia !== b.competencia) return a.competencia.localeCompare(b.competencia);
+      return a.habilidade_codigo.localeCompare(b.habilidade_codigo, undefined, { numeric: true });
+    });
+
+    return res.json(catalogoFiltrado);
+  } catch (err) { return res.status(500).json({ erro: "Erro interno" }); }
 });
 
 app.get('/api/aluno/:matricula_id/progresso', async (req, res) => {
