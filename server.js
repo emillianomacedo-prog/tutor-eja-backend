@@ -402,10 +402,15 @@ app.get('/api/admin/correcoes-pendentes', verificarToken, async (req, res) => {
     const token = req.headers.authorization?.split(' ')[1];
     const coordId = token.split('_')[1];
 
+    // Puxa a área do professor logado
     const { data: coord } = await supabase.from('coordenadores').select('area, papel').eq('id', coordId).single();
 
     let query = supabase.from('respostas_atividades')
-      .select(`id, resposta, arquivo_url, atividade_id, atividades ( enunciado, habilidade_codigo, area ), alunos ( nome_completo, cpf )`)
+      .select(`
+        id, resposta, arquivo_url, atividade_id, 
+        atividades ( enunciado, habilidade_codigo, area ), 
+        alunos ( nome_completo, cpf, matriculas_estudos ( turma, segmento ) )
+      `)
       .eq('status', 'AGUARDANDO_CORRECAO');
 
     const { data, error } = await query;
@@ -418,15 +423,22 @@ app.get('/api/admin/correcoes-pendentes', verificarToken, async (req, res) => {
       return true;
     });
 
-    const formatado = filtrados.map(d => ({ 
-      resposta_id: d.id, 
-      resposta: d.resposta, 
-      arquivo_url: d.arquivo_url, 
-      enunciado: d.atividades.enunciado, 
-      habilidade: d.atividades.habilidade_codigo, 
-      aluno_nome: d.alunos.nome_completo, 
-      aluno_cpf: d.alunos.cpf 
-    }));
+    const formatado = filtrados.map(d => {
+      // Pega a primeira matrícula ativa do aluno (geralmente ele só tem uma)
+      const matriculaInfo = d.alunos?.matriculas_estudos?.[0] || {};
+      
+      return { 
+        resposta_id: d.id, 
+        resposta: d.resposta, 
+        arquivo_url: d.arquivo_url, 
+        enunciado: d.atividades.enunciado, 
+        habilidade: d.atividades.habilidade_codigo, 
+        aluno_nome: d.alunos.nome_completo, 
+        aluno_cpf: d.alunos.cpf,
+        turma: matriculaInfo.turma || 'N/I',
+        segmento: matriculaInfo.segmento || 'N/I'
+      };
+    });
 
     return res.json(formatado);
   } catch (error) { 
