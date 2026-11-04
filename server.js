@@ -316,6 +316,7 @@ app.post('/api/atividades/:id/responder', async (req, res) => {
     if (atual?.status === 'FINALIZADA' || atual?.status === 'AGUARDANDO_CORRECAO') return res.status(400).json({ erro: 'Atividade já finalizada ou em correção.' });
     const tentativas = (atual?.tentativas || 0) + 1;
     let nota = null, statusSugerido = 'AGUARDANDO_CORRECAO', feedback = 'Sua resposta foi enviada! O professor avaliará em breve.', corrigido_por = null;
+    
     if (atividade.tipo === 'objetiva') {
       const acertou = String(resposta).trim().toLowerCase() === String(atividade.gabarito || '').trim().toLowerCase();
       nota = acertou ? 100 : 0;
@@ -323,19 +324,43 @@ app.post('/api/atividades/:id/responder', async (req, res) => {
       feedback = acertou ? 'Resposta correta! Muito bem.' : 'Resposta incorreta. Tente novamente.';
       corrigido_por = 'gabarito';
     }
+
     const { data, error } = await supabase.from('respostas_atividades').upsert({
-      atividade_id: req.params.id, aluno_id: alunoIdReal, resposta: resposta ? resposta.trim() : '', arquivo_url: arquivo_url || null, rascunho: null, nota, feedback, status: statusSugerido, tentativas, corrigido_por, corrigido_em: corrigido_por ? new Date().toISOString() : null, submetido_em: new Date().toISOString()
+      atividade_id: req.params.id, 
+      aluno_id: alunoIdReal, 
+      resposta: resposta ? resposta.trim() : '', 
+      arquivo_url: arquivo_url || null, 
+      rascunho: null, 
+      nota, 
+      feedback, 
+      status: statusSugerido, 
+      tentativas, 
+      corrigido_por, 
+      corrigido_em: corrigido_por ? new Date().toISOString() : null, 
+      submetido_em: new Date().toISOString()
     }, { onConflict: 'atividade_id,aluno_id', ignoreDuplicates: false }).select().single();
+
     if (error) throw error;
-        if (statusSugerido === 'AGUARDANDO_CORRECAO' && matricula_id) {
+
+    // Cria o alerta de correção de forma isolada (se falhar, não derruba a resposta salva)
+    if (statusSugerido === 'AGUARDANDO_CORRECAO' && matricula_id) {
       try {
-        await supabase.from('alertas_coordenacao').insert({ matricula_id, tipo: 'correcao_pendente', mensagem_original: `Nova resposta subjetiva aguardando correção.`, status: 'pendente' });
+        await supabase.from('alertas_coordenacao').insert({ 
+          matricula_id, 
+          tipo: 'correcao_pendente', 
+          mensagem_original: `Nova resposta subjetiva aguardando correção.`, 
+          status: 'pendente' 
+        });
       } catch (errAlerta) {
-        console.warn("Aviso: não foi possível criar o alerta para o coordenador, mas a resposta do aluno foi salva.", errAlerta.message);
+        console.warn("Aviso: falha ao criar alerta:", errAlerta.message);
       }
     }
+    
     return res.json({ resposta: data });
-  } catch (err) { return res.status(500).json({ erro: 'Erro' }); }
+  } catch (err) { 
+    console.error("🚨 ERRO AO RESPONDER ATIVIDADE:", err.message, err.details || ''); 
+    return res.status(500).json({ erro: 'Erro ao salvar resposta', detalhe: err.message }); 
+  }
 });
 
 app.post('/api/atividades', verificarToken, async (req, res) => {
@@ -402,21 +427,17 @@ app.post('/api/admin/corrigir-atividade/:resposta_id', verificarToken, async (re
 app.get('/api/aluno/:matricula_id/habilidades', async (req, res) => {
   const { matricula_id } = req.params;
   try {
-    // 1. Pega o segmento e as dispensadas da matrícula
     const { data: matricula } = await supabase.from('matriculas_estudos').select('segmento').eq('id', matricula_id).single();
     if (!matricula) return res.status(404).json({ erro: "Matrícula não encontrada" });
     
     const { data: dispensadas } = await supabase.from('habilidades_dispensadas').select('habilidade_codigo, area').eq('matricula_id', matricula_id);
     const dispensadasSet = new Set((dispensadas || []).map(d => `${d.area}_${d.habilidade_codigo}`));
 
-    // 2. Pega o catálogo do segmento
     const { data: catalogo, error: errCat } = await supabase.from('catalogo_habilidades').select('habilidade_codigo, area, competencia, descricao').eq('segmento', matricula.segmento);
     if (errCat) throw errCat;
 
-    // 3. Filtra as que o aluno não tem dispensa
     const catalogoFiltrado = catalogo.filter(h => !dispensadasSet.has(`${h.area}_${h.habilidade_codigo}`));
 
-    // 4. Ordena pela área, depois competência e depois habilidade (alfanumérico correto)
     catalogoFiltrado.sort((a, b) => {
       if (a.area !== b.area) return a.area.localeCompare(b.area);
       if (a.competencia !== b.competencia) return a.competencia.localeCompare(b.competencia);
@@ -433,7 +454,6 @@ app.get('/api/aluno/:matricula_id/competencias-pendentes', async (req, res) => {
     const { data: matricula } = await supabase.from('matriculas_estudos').select('segmento').eq('id', matricula_id).single();
     if (!matricula) return res.status(404).json({ erro: "Matrícula não encontrada" });
 
-    // 1. Pega as habilidades pendentes do aluno (só o código e a área)
     const { data: habsPendentes } = await supabase.from('habilidades_a_desenvolver')
       .select('habilidade_codigo, area')
       .eq('matricula_id', matricula_id)
@@ -441,18 +461,15 @@ app.get('/api/aluno/:matricula_id/competencias-pendentes', async (req, res) => {
 
     if (!habsPendentes || habsPendentes.length === 0) return res.json({});
 
-    // 2. Pega o catálogo para descobrir a qual competência cada habilidade pertence
     const { data: catalogo } = await supabase.from('catalogo_habilidades')
       .select('habilidade_codigo, area, competencia')
       .eq('segmento', matricula.segmento);
 
-    // Cria um mapa para busca rápida: chave = "area_codigo"
     const mapaCompetencias = {};
     catalogo.forEach(c => {
       mapaCompetencias[`${c.area}_${c.habilidade_codigo}`] = c.competencia;
     });
 
-    // 3. Agrupa as competências únicas por área
     const compsPorArea = {};
     habsPendentes.forEach(h => {
       const competencia = mapaCompetencias[`${h.area}_${h.habilidade_codigo}`];
@@ -462,7 +479,6 @@ app.get('/api/aluno/:matricula_id/competencias-pendentes', async (req, res) => {
       }
     });
 
-    // 4. Converte os Sets em arrays ordenados
     const resultado = {};
     for (const [area, comps] of Object.entries(compsPorArea)) {
       resultado[area] = Array.from(comps).sort();
