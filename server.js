@@ -236,7 +236,6 @@ app.get('/api/atividades', async (req, res) => {
     
     const atividadesPermitidas = atividades.filter(a => !habilidadesDispensadas.includes(a.habilidade_codigo));
     
-    // Ordena as habilidades corretamente (C1H1, C1H2, C1H3...)
     atividadesPermitidas.sort((a, b) => (a.habilidade_codigo || '').localeCompare(b.habilidade_codigo || '', undefined, { numeric: true }));
 
     if (atividadesPermitidas.length === 0) return res.json({ atividades: [] });
@@ -342,7 +341,6 @@ app.post('/api/atividades/:id/responder', async (req, res) => {
 
     if (error) throw error;
 
-    // Cria o alerta de correção de forma isolada (se falhar, não derruba a resposta salva)
     if (statusSugerido === 'AGUARDANDO_CORRECAO' && matricula_id) {
       try {
         await supabase.from('alertas_coordenacao').insert({ 
@@ -523,6 +521,16 @@ app.post('/api/chat', async (req, res) => {
     const matchHab = mensagemAluno.match(/(C\d+H\d+)/i);
     if (matchHab) habilidadeFoco = matchHab[0].toUpperCase();
 
+    // Força a área se o aluno tiver digitado (ex: "de linguagens")
+    let areaFoco = null;
+    const matchArea = mensagemAluno.match(/(linguagens|matemática|matematica|ciências da natureza|ciencias da natureza|ciências humanas|ciencias humanas)/i);
+    if (matchArea) {
+        areaFoco = matchArea[0].toLowerCase()
+            .normalize('NFD').replace(/[\u0300-\u036f]/g, "") // Remove acentos
+            .replace('ciencias da natureza', 'ciencias_natureza')
+            .replace('ciencias humanas', 'ciencias_humanas');
+    }
+
     if (habilidadeFoco) {
       const isDispensada = habsDispensadas && habsDispensadas.some(h => h.habilidade_codigo === habilidadeFoco);
       if (isDispensada) {
@@ -540,7 +548,10 @@ app.post('/api/chat', async (req, res) => {
     }
 
     let textoBusca = mensagemAluno;
-    if (mensagemAluno.length < 10 && habilidadeFoco) textoBusca = `O que é ${habilidadeFoco} ${descricaoHabilidade}`;
+    if (mensagemAluno.length < 15 && habilidadeFoco) {
+      textoBusca = `O que é ${habilidadeFoco} ${descricaoHabilidade}`;
+      if (areaFoco) textoBusca += ` na área de ${areaFoco}`;
+    }
 
     let contextoLivro = "";
     let chunksUsados = [];
@@ -548,10 +559,25 @@ app.post('/api/chat', async (req, res) => {
       try {
         const modelEmbed = new GoogleGenerativeAI(geminiKeys[0]).getGenerativeModel({ model: "gemini-embedding-001" });
         const resultEmb = await modelEmbed.embedContent(textoBusca);
-        const { data: chunks } = await supabase.rpc('match_chunks', { query_embedding: resultEmb.embedding.values, filter_habilidade: habilidadeFoco, filter_segmento: segmentoAluno, match_count: 1 });
+        
+        // Se tiver a área, busca apenas os chunks dela.
+        const { data: chunks } = await supabase.rpc('match_chunks', { 
+            query_embedding: resultEmb.embedding.values, 
+            filter_habilidade: habilidadeFoco, 
+            filter_segmento: segmentoAluno, 
+            match_count: 1 
+        });
+        
         if (chunks && chunks.length > 0) {
-          contextoLivro = chunks.map(c => c.conteudo).join("\n---\n");
-          chunksUsados = chunks.map(c => c.id);
+          // Filtra manualmente no JS por área, caso o RAG tenha pego a área errada (como era o bug)
+          let chunksFiltrados = chunks;
+          if (areaFoco) {
+             chunksFiltrados = chunks.filter(c => c.area === areaFoco);
+             // Se não achar nada com o filtro (por erro de digitação), volta para o padrão
+             if (chunksFiltrados.length === 0) chunksFiltrados = chunks;
+          }
+          contextoLivro = chunksFiltrados.map(c => c.conteudo).join("\n---\n");
+          chunksUsados = chunksFiltrados.map(c => c.id);
         }
       } catch (err) { console.warn("Falha RAG:", err.message); }
     }
@@ -575,7 +601,10 @@ app.post('/api/chat', async (req, res) => {
     ]);
 
     return res.json({ resposta: textoLimpo });
-  } catch (error) { return res.status(500).json({ erro: "Erro" }); }
+  } catch (error) { 
+    console.error(error);
+    return res.status(500).json({ erro: "Erro" }); 
+  }
 });
 
 app.get('/api/admin/catalogo/:segmento', verificarToken, async (req, res) => {
