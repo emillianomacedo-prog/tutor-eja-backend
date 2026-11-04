@@ -399,11 +399,40 @@ app.delete('/api/admin/atividades/:id', verificarToken, async (req, res) => {
 // ROTAS DO PAINEL DO PROFESSOR
 app.get('/api/admin/correcoes-pendentes', verificarToken, async (req, res) => {
   try {
-    const { data, error } = await supabase.from('respostas_atividades').select(`id, resposta, arquivo_url, atividade_id, atividades ( enunciado, habilidade_codigo, area ), alunos ( nome_completo, cpf )`).eq('status', 'AGUARDANDO_CORRECAO');
+    const token = req.headers.authorization?.split(' ')[1];
+    const coordId = token.split('_')[1];
+
+    const { data: coord } = await supabase.from('coordenadores').select('area, papel').eq('id', coordId).single();
+
+    let query = supabase.from('respostas_atividades')
+      .select(`id, resposta, arquivo_url, atividade_id, atividades ( enunciado, habilidade_codigo, area ), alunos ( nome_completo, cpf )`)
+      .eq('status', 'AGUARDANDO_CORRECAO');
+
+    const { data, error } = await query;
     if (error) throw error;
-    const formatado = data.map(d => ({ resposta_id: d.id, resposta: d.resposta, arquivo_url: d.arquivo_url, enunciado: d.atividades.enunciado, habilidade: d.atividades.habilidade_codigo, aluno_nome: d.alunos.nome_completo, aluno_cpf: d.alunos.cpf }));
+
+    const filtrados = data.filter(d => {
+      if (coord && coord.papel === 'professor' && coord.area) {
+        return d.atividades.area === coord.area;
+      }
+      return true;
+    });
+
+    const formatado = filtrados.map(d => ({ 
+      resposta_id: d.id, 
+      resposta: d.resposta, 
+      arquivo_url: d.arquivo_url, 
+      enunciado: d.atividades.enunciado, 
+      habilidade: d.atividades.habilidade_codigo, 
+      aluno_nome: d.alunos.nome_completo, 
+      aluno_cpf: d.alunos.cpf 
+    }));
+
     return res.json(formatado);
-  } catch (error) { return res.status(500).json({ erro: "Erro" }); }
+  } catch (error) { 
+    console.error(error);
+    return res.status(500).json({ erro: "Erro" }); 
+  }
 });
 
 app.post('/api/admin/corrigir-atividade/:resposta_id', verificarToken, async (req, res) => {
@@ -521,12 +550,11 @@ app.post('/api/chat', async (req, res) => {
     const matchHab = mensagemAluno.match(/(C\d+H\d+)/i);
     if (matchHab) habilidadeFoco = matchHab[0].toUpperCase();
 
-    // Força a área se o aluno tiver digitado (ex: "de linguagens")
     let areaFoco = null;
     const matchArea = mensagemAluno.match(/(linguagens|matemática|matematica|ciências da natureza|ciencias da natureza|ciências humanas|ciencias humanas)/i);
     if (matchArea) {
         areaFoco = matchArea[0].toLowerCase()
-            .normalize('NFD').replace(/[\u0300-\u036f]/g, "") // Remove acentos
+            .normalize('NFD').replace(/[\u0300-\u036f]/g, "")
             .replace('ciencias da natureza', 'ciencias_natureza')
             .replace('ciencias humanas', 'ciencias_humanas');
     }
@@ -560,7 +588,6 @@ app.post('/api/chat', async (req, res) => {
         const modelEmbed = new GoogleGenerativeAI(geminiKeys[0]).getGenerativeModel({ model: "gemini-embedding-001" });
         const resultEmb = await modelEmbed.embedContent(textoBusca);
         
-        // Se tiver a área, busca apenas os chunks dela.
         const { data: chunks } = await supabase.rpc('match_chunks', { 
             query_embedding: resultEmb.embedding.values, 
             filter_habilidade: habilidadeFoco, 
@@ -569,11 +596,9 @@ app.post('/api/chat', async (req, res) => {
         });
         
         if (chunks && chunks.length > 0) {
-          // Filtra manualmente no JS por área, caso o RAG tenha pego a área errada (como era o bug)
           let chunksFiltrados = chunks;
           if (areaFoco) {
              chunksFiltrados = chunks.filter(c => c.area === areaFoco);
-             // Se não achar nada com o filtro (por erro de digitação), volta para o padrão
              if (chunksFiltrados.length === 0) chunksFiltrados = chunks;
           }
           contextoLivro = chunksFiltrados.map(c => c.conteudo).join("\n---\n");
@@ -837,16 +862,52 @@ app.get('/api/boletim', async (req, res) => {
   } catch (err) { return res.status(500).json({ erro: 'Erro' }); }
 });
 
-app.get('/api/boletim/:aluno_id', verificarToken, async (req, res) => {
+app.get('/api/boletim/:matricula_id', verificarToken, async (req, res) => {
+  const { matricula_id } = req.params;
+  try {
+    const aluno_id = await resolverAlunoId(matricula_id);
+    if (!aluno_id) return res.status(404).json({ erro: 'Aluno não encontrado' });
+
+    const { data: aluno } = await supabase.from('alunos').select('id, nome_completo').eq('id', aluno_id).single();
+    const { data: matricula } = await supabase.from('matriculas_estudos').select('segmento, turma').eq('id', matricula_id).maybeSingle();
+    
+    const { data, error } = await supabase.rpc('verificar_aproveitamento', { p_aluno_id: aluno_id });
+    if (error) throw error;
+
+    const apto = (data || []).length > 0 && data.every(c => c.apto_certificacao);
+    return res.json({ 
+      aluno: { ...aluno, segmento: matricula?.segmento, turma: matricula?.turma }, 
+      competencias: data || [], 
+      apto_certificacao: apto, 
+      total_competencias: (data || []).length, 
+      total_aprovadas: (data || []).filter(c => c.aprovado_competencia).length 
+    });
+  } catch (err) { 
+    console.error(err);
+    return res.status(500).json({ erro: 'Erro ao buscar boletim' }); 
+  }
+});
+
+app.get('/api/consultar-atividades/:aluno_id', verificarToken, async (req, res) => {
   const { aluno_id } = req.params;
   try {
     const alunoIdReal = await resolverAlunoId(aluno_id);
-    const { data: aluno } = await supabase.from('alunos').select('id, nome_completo').eq('id', alunoIdReal).single();
-    const { data: matricula } = await supabase.from('matriculas_estudos').select('segmento, turma').eq('aluno_id', alunoIdReal).eq('status', 'ativa').maybeSingle();
-    const { data, error } = await supabase.rpc('verificar_aproveitamento', { p_aluno_id: alunoIdReal });
-    const apto = (data || []).length > 0 && data.every(c => c.apto_certificacao);
-    return res.json({ aluno: { ...aluno, segmento: matricula?.segmento, turma: matricula?.turma }, competencias: data || [], apto_certificacao: apto, total_competencias: (data || []).length, total_aprovadas: (data || []).filter(c => c.aprovado_competencia).length });
-  } catch (err) { return res.status(500).json({ erro: 'Erro' }); }
+    if (!alunoIdReal) return res.status(404).json({ erro: 'Aluno não encontrado' });
+
+    const { data, error } = await supabase.from('respostas_atividades')
+      .select(`
+        id, status, nota, created_at, 
+        atividades ( enunciado, tipo, competencia, area )
+      `)
+      .eq('aluno_id', alunoIdReal)
+      .order('created_at', { ascending: false });
+      
+    if (error) throw error;
+    return res.json(data);
+  } catch (err) { 
+    console.error(err);
+    return res.status(500).json({ erro: 'Erro ao buscar atividades' }); 
+  }
 });
 
 app.get('/health', (req, res) => res.json({ status: 'healthy', uptime: process.uptime() }));
