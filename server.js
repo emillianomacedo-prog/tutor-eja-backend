@@ -327,8 +327,12 @@ app.post('/api/atividades/:id/responder', async (req, res) => {
       atividade_id: req.params.id, aluno_id: alunoIdReal, resposta: resposta ? resposta.trim() : '', arquivo_url: arquivo_url || null, rascunho: null, nota, feedback, status: statusSugerido, tentativas, corrigido_por, corrigido_em: corrigido_por ? new Date().toISOString() : null, submetido_em: new Date().toISOString()
     }, { onConflict: 'atividade_id,aluno_id', ignoreDuplicates: false }).select().single();
     if (error) throw error;
-    if (statusSugerido === 'AGUARDANDO_CORRECAO' && matricula_id) {
-      await supabase.from('alertas_coordenacao').insert({ matricula_id, tipo: 'correcao_pendente', mensagem_original: `Nova resposta subjetiva aguardando correção.`, status: 'pendente' });
+        if (statusSugerido === 'AGUARDANDO_CORRECAO' && matricula_id) {
+      try {
+        await supabase.from('alertas_coordenacao').insert({ matricula_id, tipo: 'correcao_pendente', mensagem_original: `Nova resposta subjetiva aguardando correção.`, status: 'pendente' });
+      } catch (errAlerta) {
+        console.warn("Aviso: não foi possível criar o alerta para o coordenador, mas a resposta do aluno foi salva.", errAlerta.message);
+      }
     }
     return res.json({ resposta: data });
   } catch (err) { return res.status(500).json({ erro: 'Erro' }); }
