@@ -931,13 +931,22 @@ app.get('/api/relatorio-dados/:matricula_id', verificarToken, async (req, res) =
     
     let { data: relatorio } = await supabase.from('relatorios_oficiais').select('*').eq('matricula_id', matricula_id).single();
     let sintese = "";
-    
     if (relatorio) {
       sintese = relatorio.sintese_qualitativa;
     } else {
       const { data: registros } = await supabase.from('registros_qualitativos').select('*').eq('matricula_id', matricula_id);
-      const prompt = `Gere uma síntese qualitativa PARCIAL para o aluno ${aluno.nome_completo}, destacando o progresso até aqui. Registros: ${JSON.stringify(registros || [])}`;
-      sintese = await gerarRespostaIA(prompt, [], "Gerar Relatório Parcial");
+      
+      // Novo prompt: mais restrito e focado nas notas
+      const prompt = `
+        Você é um pedagogo especialista em EJA. Gere uma síntese qualitativa PARCIAL para o aluno ${aluno.nome_completo}.
+        Use um tom encorajador e profissional. 
+        Se os registros qualitativos estiverem vazios, baseie-se nas notas atuais do aluno (algumas áreas já têm engajamento, outras ainda estão zeradas).
+        NÃO peça documentos ou tabelas. Escreva 2 parágrafos diretos.
+        
+        Notas do aluno: ${JSON.stringify(notas || [])}
+        Registros: ${JSON.stringify(registros || [])}
+      `;
+      sintese = await gerarRespostaIA(prompt, [], "Gerar Síntese Parcial");
     }
 
     const { data: mensagens } = await supabase.from('mensagens_chat')
