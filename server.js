@@ -402,7 +402,6 @@ app.get('/api/admin/correcoes-pendentes', verificarToken, async (req, res) => {
     const token = req.headers.authorization?.split(' ')[1];
     const coordId = token.split('_')[1];
 
-    // Puxa a área do professor logado
     const { data: coord } = await supabase.from('coordenadores').select('area, papel').eq('id', coordId).single();
 
     let query = supabase.from('respostas_atividades')
@@ -424,13 +423,19 @@ app.get('/api/admin/correcoes-pendentes', verificarToken, async (req, res) => {
     });
 
     const formatado = filtrados.map(d => {
-      // Pega a primeira matrícula ativa do aluno (geralmente ele só tem uma)
       const matriculaInfo = d.alunos?.matriculas_estudos?.[0] || {};
       
+      // Lógica para garantir que o link abra corretamente no navegador
+      let linkArquivo = d.arquivo_url;
+      if (linkArquivo && !linkArquivo.startsWith('http') && !linkArquivo.startsWith('data:')) {
+          // Se salvou apenas o Base64 puro, adiciona o prefixo genérico
+          linkArquivo = `data:application/pdf;base64,${linkArquivo}`; // Assume PDF se não tiver prefixo
+      }
+
       return { 
         resposta_id: d.id, 
         resposta: d.resposta, 
-        arquivo_url: d.arquivo_url, 
+        arquivo_url: linkArquivo, 
         enunciado: d.atividades.enunciado, 
         habilidade: d.atividades.habilidade_codigo, 
         aluno_nome: d.alunos.nome_completo, 
