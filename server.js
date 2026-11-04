@@ -230,12 +230,15 @@ app.get('/api/atividades', async (req, res) => {
       const { data: dispensadas } = await supabase.from('habilidades_dispensadas').select('habilidade_codigo').eq('matricula_id', matricula.id);
       if (dispensadas) habilidadesDispensadas = dispensadas.map(h => h.habilidade_codigo);
     }
-    const { data: atividades, error } = await supabase.from('atividades').select('id, competencia, habilidade_codigo, area, tipo, enunciado, alternativas, imagem_url, pontuacao_max').eq('competencia', competencia).eq('area', area).eq('ativa', true);  
+    const { data: atividades, error } = await supabase.from('atividades').select('id, competencia, habilidade_codigo, area, tipo, enunciado, alternativas, imagem_url, pontuacao_max').eq('competencia', competencia).eq('area', area).eq('ativa', true); 
     if (error) throw error;
     if (!atividades || atividades.length === 0) return res.json({ atividades: [] });
+    
     const atividadesPermitidas = atividades.filter(a => !habilidadesDispensadas.includes(a.habilidade_codigo));
+    
     // Ordena as habilidades corretamente (C1H1, C1H2, C1H3...)
-    atividadesPermitidas.sort((a, b) => a.habilidade_codigo.localeCompare(b.habilidade_codigo, undefined, { numeric: true }));
+    atividadesPermitidas.sort((a, b) => (a.habilidade_codigo || '').localeCompare(b.habilidade_codigo || '', undefined, { numeric: true }));
+
     if (atividadesPermitidas.length === 0) return res.json({ atividades: [] });
     const ids = atividadesPermitidas.map(a => a.id);
     const { data: respostas } = await supabase.from('respostas_atividades').select('atividade_id, status, nota, tentativas, feedback, arquivo_url').eq('aluno_id', alunoIdReal).in('atividade_id', ids);
@@ -418,6 +421,39 @@ app.get('/api/aluno/:matricula_id/habilidades', async (req, res) => {
 
     return res.json(catalogoFiltrado);
   } catch (err) { return res.status(500).json({ erro: "Erro interno" }); }
+});
+
+app.get('/api/aluno/:matricula_id/competencias-pendentes', async (req, res) => {
+  const { matricula_id } = req.params;
+  try {
+    const { data: matricula } = await supabase.from('matriculas_estudos').select('segmento').eq('id', matricula_id).single();
+    if (!matricula) return res.status(404).json({ erro: "Matrícula não encontrada" });
+
+    // Pega as habilidades que o aluno precisa fazer
+    const { data: habs } = await supabase.from('habilidades_a_desenvolver')
+      .select('area, competencia')
+      .eq('matricula_id', matricula_id)
+      .neq('status', 'concluida'); // Ignora as que ele já concluiu
+
+    if (!habs) return res.json({});
+
+    // Agrupa as competências únicas por área
+    const compsPorArea = {};
+    habs.forEach(h => {
+      if (!compsPorArea[h.area]) compsPorArea[h.area] = new Set();
+      if (h.competencia) compsPorArea[h.area].add(h.competencia);
+    });
+
+    // Converte os Sets em arrays ordenados
+    const resultado = {};
+    for (const [area, comps] of Object.entries(compsPorArea)) {
+      resultado[area] = Array.from(comps).sort();
+    }
+
+    return res.json(resultado);
+  } catch (err) { 
+    return res.status(500).json({ erro: "Erro interno" }); 
+  }
 });
 
 app.get('/api/aluno/:matricula_id/progresso', async (req, res) => {
