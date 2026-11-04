@@ -1018,15 +1018,16 @@ app.get('/api/relatorio-pdf/:matricula_id', verificarToken, async (req, res) => 
       </html>
     `;
 
+    // Ajustes para funcionar no Render
     const browser = await puppeteer.launch({
-      args: chromium.args,
+      args: [...chromium.args, '--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
       defaultViewport: chromium.defaultViewport,
       executablePath: await chromium.executablePath(),
       headless: chromium.headless,
     });
 
     const page = await browser.newPage();
-    await page.setContent(html, { waitUntil: 'networkidle0' });
+    await page.setContent(html, { waitUntil: 'networkidle0', timeout: 60000 });
     
     const pdfBuffer = await page.pdf({
       format: 'A4',
