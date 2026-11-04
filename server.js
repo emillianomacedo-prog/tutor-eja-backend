@@ -6,6 +6,8 @@ const { createClient } = require('@supabase/supabase-js');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const Groq = require('groq-sdk');
 const nodemailer = require('nodemailer');
+const puppeteer = require('puppeteer-core');
+const chromium = require('@sparticuz/chromium');
 
 const app = express();
 app.use(cors());
@@ -907,6 +909,140 @@ app.get('/api/consultar-atividades/:aluno_id', verificarToken, async (req, res) 
   } catch (err) { 
     console.error(err);
     return res.status(500).json({ erro: 'Erro ao buscar atividades' }); 
+  }
+});
+
+// =====================================================================
+// ROTA DO RELATÓRIO FINAL EM PDF (PORTFÓLIO)
+// =====================================================================
+app.get('/api/relatorio-pdf/:matricula_id', verificarToken, async (req, res) => {
+  const { matricula_id } = req.params;
+  try {
+    const aluno_id = await resolverAlunoId(matricula_id);
+    if (!aluno_id) return res.status(404).json({ erro: 'Aluno não encontrado' });
+
+    const { data: aluno } = await supabase.from('alunos').select('*').eq('id', aluno_id).single();
+    const { data: matricula } = await supabase.from('matriculas_estudos').select('*').eq('id', matricula_id).single();
+    const { data: notas } = await supabase.rpc('verificar_aproveitamento', { p_aluno_id: aluno_id });
+    
+    let { data: relatorio } = await supabase.from('relatorios_oficiais').select('*').eq('matricula_id', matricula_id).single();
+    let sintese = "";
+    
+    if (relatorio) {
+      sintese = relatorio.sintese_qualitativa;
+    } else {
+      const { data: registros } = await supabase.from('registros_qualitativos').select('*').eq('matricula_id', matricula_id);
+      const prompt = `Gere uma síntese qualitativa PARCIAL para o aluno ${aluno.nome_completo}, destacando o progresso até aqui. Registros: ${JSON.stringify(registros || [])}`;
+      sintese = await gerarRespostaIA(prompt, [], "Gerar Relatório Parcial");
+    }
+
+    const { data: mensagens } = await supabase.from('mensagens_chat')
+      .select('texto, criada_em')
+      .eq('matricula_id', matricula_id)
+      .eq('remetente', 'aluno')
+      .order('criada_em', { ascending: false })
+      .limit(3);
+
+    const citacoesHtml = (mensagens || []).map(m => `
+      <div style="margin-bottom: 10px; padding: 15px; background: #f8fafc; border-left: 4px solid #16a34a; font-style: italic; color: #334155;">
+        "${m.texto}"
+        <div style="font-size: 0.75rem; color: #64748b; margin-top: 5px; text-align: right;">Registrado em: ${new Date(m.criada_em).toLocaleDateString('pt-BR')}</div>
+      </div>
+    `).join('');
+
+    const html = `
+      <html>
+      <head>
+        <style>
+          body { font-family: 'Segoe UI', Tahoma, sans-serif; color: #1f2937; margin: 0; padding: 0; }
+          .capa { page-break-after: always; height: 100vh; display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center; background: #0057b8; color: white; padding: 40px; box-sizing: border-box; }
+          .capa h1 { font-size: 2.5rem; margin-bottom: 10px; }
+          .capa h2 { font-size: 1.5rem; font-weight: normal; }
+          .conteudo { padding: 40px; }
+          .header { border-bottom: 2px solid #0057b8; padding-bottom: 10px; margin-bottom: 20px; }
+          .header h1 { margin: 0; color: #0057b8; font-size: 1.5rem; }
+          table { width: 100%; border-collapse: collapse; margin-bottom: 20px; font-size: 0.9rem; }
+          th, td { border: 1px solid #cbd5e1; padding: 8px; text-align: left; }
+          th { background: #f1f5f9; color: #003b73; }
+          .sintese { line-height: 1.6; text-align: justify; margin-bottom: 30px; white-space: pre-wrap; }
+          h3 { color: #003b73; border-bottom: 1px solid #e2e8f0; padding-bottom: 5px; margin-top: 30px; }
+        </style>
+      </head>
+      <body>
+        <div class="capa">
+          <h2>SESI - Serviço Social da Indústria</h2>
+          <h1>Portfólio Final de Aprendizagem</h1>
+          <p style="font-size: 1.2rem; margin-top: 20px;">Aluno: ${aluno.nome_completo}</p>
+          <p style="font-size: 1rem;">Turma: ${matricula.turma} | Etapa: ${matricula.segmento.toUpperCase()}</p>
+          <p style="font-size: 1rem; margin-top: 50px;">Gerado em: ${new Date().toLocaleDateString('pt-BR')}</p>
+        </div>
+
+        <div class="conteudo">
+          <div class="header">
+            <h1>Relatório de Desempenho</h1>
+          </div>
+          
+          <h3>Quadro de Notas (40/40/20)</h3>
+          <table>
+            <thead>
+              <tr>
+                <th>Área</th>
+                <th>Competência</th>
+                <th>Oficina</th>
+                <th>Atividades</th>
+                <th>Engajamento</th>
+                <th>Nota Final</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${(notas || []).map(n => `
+                <tr>
+                  <td style="text-transform: capitalize;">${n.area.replace('_', ' ')}</td>
+                  <td>${n.competencia}</td>
+                  <td>${Number(n.nota_oficina).toFixed(1)}</td>
+                  <td>${Number(n.nota_atividades).toFixed(1)}</td>
+                  <td>${Number(n.nota_engajamento).toFixed(1)}</td>
+                  <td style="font-weight: bold; color: ${n.nota_final >= 60 ? '#16a34a' : '#dc2626'};">${Number(n.nota_final).toFixed(1)}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+
+          <h3>Síntese Qualitativa (Bloom e Andragogia)</h3>
+          <div class="sintese">${sintese.replace(/\n/g, '<br>')}</div>
+
+          <h3>Registros de Aprendizagem (Citações do Aluno)</h3>
+          ${citacoesHtml || '<p>Nenhuma interação registrada no chat.</p>'}
+        </div>
+      </body>
+      </html>
+    `;
+
+    const browser = await puppeteer.launch({
+      args: chromium.args,
+      defaultViewport: chromium.defaultViewport,
+      executablePath: await chromium.executablePath(),
+      headless: chromium.headless,
+    });
+
+    const page = await browser.newPage();
+    await page.setContent(html, { waitUntil: 'networkidle0' });
+    
+    const pdfBuffer = await page.pdf({
+      format: 'A4',
+      printBackground: true,
+      margin: { top: '20px', bottom: '20px', left: '20px', right: '20px' }
+    });
+
+    await browser.close();
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="portfolio_${aluno.nome_completo.replace(/ /g, '_')}.pdf"`);
+    res.send(pdfBuffer);
+
+  } catch (err) {
+    console.error("Erro ao gerar PDF:", err);
+    res.status(500).json({ erro: 'Erro ao gerar o PDF', detalhe: err.message });
   }
 });
 
