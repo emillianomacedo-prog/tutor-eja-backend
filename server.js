@@ -429,22 +429,36 @@ app.get('/api/aluno/:matricula_id/competencias-pendentes', async (req, res) => {
     const { data: matricula } = await supabase.from('matriculas_estudos').select('segmento').eq('id', matricula_id).single();
     if (!matricula) return res.status(404).json({ erro: "Matrícula não encontrada" });
 
-    // Pega as habilidades que o aluno precisa fazer
-    const { data: habs } = await supabase.from('habilidades_a_desenvolver')
-      .select('area, competencia')
+    // 1. Pega as habilidades pendentes do aluno (só o código e a área)
+    const { data: habsPendentes } = await supabase.from('habilidades_a_desenvolver')
+      .select('habilidade_codigo, area')
       .eq('matricula_id', matricula_id)
-      .neq('status', 'concluida'); // Ignora as que ele já concluiu
+      .neq('status', 'concluida'); 
 
-    if (!habs) return res.json({});
+    if (!habsPendentes || habsPendentes.length === 0) return res.json({});
 
-    // Agrupa as competências únicas por área
-    const compsPorArea = {};
-    habs.forEach(h => {
-      if (!compsPorArea[h.area]) compsPorArea[h.area] = new Set();
-      if (h.competencia) compsPorArea[h.area].add(h.competencia);
+    // 2. Pega o catálogo para descobrir a qual competência cada habilidade pertence
+    const { data: catalogo } = await supabase.from('catalogo_habilidades')
+      .select('habilidade_codigo, area, competencia')
+      .eq('segmento', matricula.segmento);
+
+    // Cria um mapa para busca rápida: chave = "area_codigo"
+    const mapaCompetencias = {};
+    catalogo.forEach(c => {
+      mapaCompetencias[`${c.area}_${c.habilidade_codigo}`] = c.competencia;
     });
 
-    // Converte os Sets em arrays ordenados
+    // 3. Agrupa as competências únicas por área
+    const compsPorArea = {};
+    habsPendentes.forEach(h => {
+      const competencia = mapaCompetencias[`${h.area}_${h.habilidade_codigo}`];
+      if (competencia) {
+        if (!compsPorArea[h.area]) compsPorArea[h.area] = new Set();
+        compsPorArea[h.area].add(competencia);
+      }
+    });
+
+    // 4. Converte os Sets em arrays ordenados
     const resultado = {};
     for (const [area, comps] of Object.entries(compsPorArea)) {
       resultado[area] = Array.from(comps).sort();
@@ -452,6 +466,7 @@ app.get('/api/aluno/:matricula_id/competencias-pendentes', async (req, res) => {
 
     return res.json(resultado);
   } catch (err) { 
+    console.error(err);
     return res.status(500).json({ erro: "Erro interno" }); 
   }
 });
