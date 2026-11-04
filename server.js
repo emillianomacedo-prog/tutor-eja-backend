@@ -715,12 +715,46 @@ app.get('/api/admin/alunos', verificarToken, async (req, res) => {
   } catch (error) { return res.status(500).json({ erro: "Erro" }); }
 });
 
-app.get('/api/admin/alertas', verificarToken, async (req, res) => {
+app.get('/api/relatorio-dados/:matricula_id', verificarToken, async (req, res) => {
+  const { matricula_id } = req.params;
   try {
-    const { data: alertas, error } = await supabase.from('alertas_coordenacao').select(`id, tipo, mensagem_original, status, criado_em, matriculas_estudos (id, alunos (nome_completo, telefone_whatsapp, email))`).eq('status', 'pendente');
-    if (error) throw error;
-    return res.json(alertas);
-  } catch (error) { return res.status(500).json({ erro: "Erro" }); }
+    const aluno_id = await resolverAlunoId(matricula_id);
+    if (!aluno_id) return res.status(404).json({ erro: 'Aluno não encontrado' });
+
+    const { data: aluno } = await supabase.from('alunos').select('*').eq('id', aluno_id).single();
+    const { data: matricula } = await supabase.from('matriculas_estudos').select('*').eq('id', matricula_id).single();
+    const { data: notas } = await supabase.rpc('verificar_aproveitamento', { p_aluno_id: aluno_id });
+    
+    let { data: relatorio } = await supabase.from('relatorios_oficiais').select('*').eq('matricula_id', matricula_id).single();
+    let sintese = "";
+    
+    if (relatorio) {
+      sintese = relatorio.sintese_qualitativa;
+    } else {
+      const { data: registros } = await supabase.from('registros_qualitativos').select('*').eq('matricula_id', matricula_id);
+      const prompt = `Gere uma síntese qualitativa PARCIAL para o aluno ${aluno.nome_completo}, destacando o progresso até aqui. Registros: ${JSON.stringify(registros || [])}`;
+      sintese = await gerarRespostaIA(prompt, [], "Gerar Relatório Parcial");
+    }
+
+    const { data: mensagens } = await supabase.from('mensagens_chat')
+      .select('texto, criada_em')
+      .eq('matricula_id', matricula_id)
+      .eq('remetente', 'aluno')
+      .order('criada_em', { ascending: false })
+      .limit(3);
+
+    return res.json({
+      aluno: aluno.nome_completo,
+      turma: matricula.turma,
+      segmento: matricula.segmento,
+      notas: notas || [],
+      sintese: sintese,
+      mensagens: mensagens || []
+    });
+  } catch (err) {
+    console.error("Erro ao gerar dados do PDF:", err);
+    res.status(500).json({ erro: 'Erro ao buscar dados para o PDF' });
+  }
 });
 
 app.post('/api/admin/alertas/:id/enviar', verificarToken, async (req, res) => {
