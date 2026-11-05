@@ -9,7 +9,7 @@ const nodemailer = require('nodemailer');
 
 const app = express();
 app.use(cors());
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({ limit: '10mb' })); // Aumentado para suportar fotos Base64
 
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
@@ -719,11 +719,22 @@ app.put('/api/admin/editar-aluno/:matricula_id', verificarToken, async (req, res
 
 app.get('/api/admin/alunos', verificarToken, async (req, res) => {
   try {
-    const { data: matriculas, error } = await supabase.from('matriculas_estudos').select(`id, status, ultimo_acesso, segmento, turma, alunos ( nome_completo, cpf )`);
+    const { data: matriculas, error } = await supabase.from('matriculas_estudos').select(`id, status, ultimo_acesso, segmento, turma, alunos ( id, nome_completo, cpf )`);
     if (error) throw error;
     const alunosComRelatorio = await Promise.all(matriculas.map(async (m) => {
       const { data: relatorio } = await supabase.from('relatorios_oficiais').select('*').eq('matricula_id', m.id).single();
-      return { matricula_id: m.id, nome: m.alunos.nome_completo, cpf: m.alunos.cpf, segmento: m.segmento, turma: m.turma, status: m.status, ultimo_acesso: m.ultimo_acesso, tem_relatorio: !!relatorio, relatorio: relatorio || null };
+      return { 
+        matricula_id: m.id, 
+        aluno_id: m.alunos.id, // Adicionado o aluno_id para o payload das oficinas
+        nome: m.alunos.nome_completo, 
+        cpf: m.alunos.cpf, 
+        segmento: m.segmento, 
+        turma: m.turma, 
+        status: m.status, 
+        ultimo_acesso: m.ultimo_acesso, 
+        tem_relatorio: !!relatorio, 
+        relatorio: relatorio || null 
+      };
     }));
     return res.json(alunosComRelatorio);
   } catch (error) { return res.status(500).json({ erro: "Erro" }); }
@@ -847,7 +858,85 @@ app.post('/api/murais', verificarToken, async (req, res) => {
   } catch (err) { return res.status(500).json({ erro: 'Erro' }); }
 });
 
+// =====================================================================
+// ROTAS DE OFICINAS PRESENCIAIS (PLANO DE AULA)
+// =====================================================================
+
+app.get('/api/admin/oficinas', verificarToken, async (req, res) => {
+  try {
+    const token = req.headers.authorization?.split(' ')[1];
+    const coordId = token.split('_')[1];
+
+    const { data: coord } = await supabase.from('coordenadores').select('papel, area').eq('id', coordId).single();
+
+    let query = supabase.from('oficinas').select(`
+      *,
+      oficinas_presenciais ( aluno_id, nota, compareceu, alunos ( nome_completo, cpf ) )
+    `).order('data_hora', { ascending: false });
+
+    if (coord && coord.papel === 'professor') {
+      query = query.eq('professor_id', coordId);
+    }
+
+    const { data, error } = await query;
+    if (error) throw error;
+    
+    const { data: professores } = await supabase.from('coordenadores').select('id, nome');
+    const mapaProf = Object.fromEntries((professores || []).map(p => [p.id, p.nome]));
+    
+    const formatado = data.map(o => ({
+      ...o,
+      professor_nome: mapaProf[o.professor_id] || 'Não informado'
+    }));
+
+    return res.json(formatado);
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ erro: 'Erro ao listar oficinas' });
+  }
+});
+
+app.post('/api/admin/oficinas', verificarToken, async (req, res) => {
+  const { data_hora, segmento, competencia, habilidades, tema, objetivos, metodologia, recursos, avaliacao, fotos, alunos_notas } = req.body;
+  
+  try {
+    const token = req.headers.authorization?.split(' ')[1];
+    const coordId = token.split('_')[1];
+
+    const { data: oficina, error: errOfi } = await supabase.from('oficinas').insert({
+      professor_id: coordId, data_hora, segmento, competencia, habilidades,
+      tema, objetivos, metodologia, recursos, avaliacao, fotos: fotos || []
+    }).select().single();
+
+    if (errOfi) throw errOfi;
+
+    if (alunos_notas && alunos_notas.length > 0) {
+      const notasInsert = alunos_notas.map(a => ({
+        oficina_id: oficina.id,
+        aluno_id: a.aluno_id,
+        area: a.area, 
+        nota: a.nota,
+        data_oficina: data_hora,
+        compareceu: true
+      }));
+      
+      const { error: errNotas } = await supabase.from('oficinas_presenciais').insert(notasInsert);
+      if (errNotas) throw errNotas;
+    }
+
+    return res.status(201).json({ mensagem: 'Oficina registrada com sucesso!', oficina });
+  } catch (err) {
+    console.error('Erro ao salvar oficina:', err);
+    return res.status(500).json({ erro: 'Erro ao registrar oficina' });
+  }
+});
+
+// =====================================================================
+// DEMAIS ROTAS (Boletim, Oficinas antigas, etc)
+// =====================================================================
+
 app.post('/api/oficinas', verificarToken, async (req, res) => {
+  // Rota antiga mantida por segurança
   const { aluno_id, area, nota, data_oficina, observacao } = req.body;
   try {
     const alunoIdReal = await resolverAlunoId(aluno_id);
