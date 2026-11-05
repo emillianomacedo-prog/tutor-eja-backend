@@ -408,7 +408,7 @@ app.get('/api/admin/correcoes-pendentes', verificarToken, async (req, res) => {
       .select(`
         id, resposta, arquivo_url, atividade_id, 
         atividades ( enunciado, habilidade_codigo, area ), 
-        alunos ( nome_completo, cpf, matriculas_estudos ( turma, segmento ) )
+        alunos ( nome_completo, cpf, laudo, matriculas_estudos ( turma, segmento ) )
       `)
       .eq('status', 'AGUARDANDO_CORRECAO');
 
@@ -425,11 +425,9 @@ app.get('/api/admin/correcoes-pendentes', verificarToken, async (req, res) => {
     const formatado = filtrados.map(d => {
       const matriculaInfo = d.alunos?.matriculas_estudos?.[0] || {};
       
-      // Lógica para garantir que o link abra corretamente no navegador
       let linkArquivo = d.arquivo_url;
       if (linkArquivo && !linkArquivo.startsWith('http') && !linkArquivo.startsWith('data:')) {
-          // Se salvou apenas o Base64 puro, adiciona o prefixo genérico
-          linkArquivo = `data:application/pdf;base64,${linkArquivo}`; // Assume PDF se não tiver prefixo
+          linkArquivo = `data:application/pdf;base64,${linkArquivo}`;
       }
 
       return { 
@@ -440,6 +438,7 @@ app.get('/api/admin/correcoes-pendentes', verificarToken, async (req, res) => {
         habilidade: d.atividades.habilidade_codigo, 
         aluno_nome: d.alunos.nome_completo, 
         aluno_cpf: d.alunos.cpf,
+        aluno_laudo: d.alunos.laudo,
         turma: matriculaInfo.turma || 'N/I',
         segmento: matriculaInfo.segmento || 'N/I'
       };
@@ -659,11 +658,11 @@ app.get('/api/admin/catalogo/:segmento', verificarToken, async (req, res) => {
 });
 
 app.post('/api/admin/cadastrar-aluno', verificarToken, async (req, res) => {
-  const { nome_completo, cpf, email, telefone_whatsapp, segmento, turma, habilidades_dispensadas, senha } = req.body;
+  const { nome_completo, cpf, email, telefone_whatsapp, segmento, turma, habilidades_dispensadas, senha, laudo } = req.body;
   if (!nome_completo || !cpf || !segmento || !turma) return res.status(400).json({ erro: "Campos obrigatórios" });
   try {
     const senhaHash = await bcrypt.hash(senha || cpf, 10);
-    const { data: aluno, error: errAluno } = await supabase.from('alunos').insert({ nome_completo, cpf, email, telefone_whatsapp, senha: senhaHash }).select().single();
+    const { data: aluno, error: errAluno } = await supabase.from('alunos').insert({ nome_completo, cpf, email, telefone_whatsapp, senha: senhaHash, laudo: laudo || null }).select().single();
     if (errAluno) {
       if (errAluno.code === '23505') return res.status(400).json({ erro: "CPF já cadastrado." });
       throw errAluno;
@@ -687,7 +686,7 @@ app.post('/api/admin/cadastrar-aluno', verificarToken, async (req, res) => {
 app.get('/api/admin/aluno/:matricula_id', verificarToken, async (req, res) => {
   const { matricula_id } = req.params;
   try {
-    const { data: matricula } = await supabase.from('matriculas_estudos').select(`id, segmento, turma, alunos ( nome_completo, cpf, email, telefone_whatsapp )`).eq('id', matricula_id).single();
+    const { data: matricula } = await supabase.from('matriculas_estudos').select(`id, segmento, turma, alunos ( nome_completo, cpf, email, telefone_whatsapp, laudo )`).eq('id', matricula_id).single();
     const { data: dispensadas } = await supabase.from('habilidades_dispensadas').select('habilidade_codigo, area').eq('matricula_id', matricula_id);
     return res.json({ matricula, dispensadas });
   } catch (error) { return res.status(500).json({ erro: "Erro" }); }
@@ -695,10 +694,10 @@ app.get('/api/admin/aluno/:matricula_id', verificarToken, async (req, res) => {
 
 app.put('/api/admin/editar-aluno/:matricula_id', verificarToken, async (req, res) => {
   const { matricula_id } = req.params;
-  const { nome_completo, email, telefone_whatsapp, turma, habilidades_dispensadas, senha } = req.body;
+  const { nome_completo, email, telefone_whatsapp, turma, habilidades_dispensadas, senha, laudo } = req.body;
   try {
     const { data: matricula } = await supabase.from('matriculas_estudos').select('aluno_id, segmento').eq('id', matricula_id).single();
-    const dadosAtualizados = { nome_completo, email, telefone_whatsapp };
+    const dadosAtualizados = { nome_completo, email, telefone_whatsapp, laudo: laudo || null };
     if (senha) dadosAtualizados.senha = await bcrypt.hash(senha, 10);
     await supabase.from('alunos').update(dadosAtualizados).eq('id', matricula.aluno_id);
     await supabase.from('matriculas_estudos').update({ turma }).eq('id', matricula_id);
@@ -933,9 +932,6 @@ app.get('/api/consultar-atividades/:aluno_id', verificarToken, async (req, res) 
   }
 });
 
-// =====================================================================
-// ROTA DO RELATÓRIO EM JSON (PARA O FRONTEND GERAR O PDF)
-// =====================================================================
 app.get('/api/relatorio-dados/:matricula_id', verificarToken, async (req, res) => {
   const { matricula_id } = req.params;
   try {
@@ -948,12 +944,11 @@ app.get('/api/relatorio-dados/:matricula_id', verificarToken, async (req, res) =
     
     let { data: relatorio } = await supabase.from('relatorios_oficiais').select('*').eq('matricula_id', matricula_id).single();
     let sintese = "";
+    
     if (relatorio) {
       sintese = relatorio.sintese_qualitativa;
     } else {
       const { data: registros } = await supabase.from('registros_qualitativos').select('*').eq('matricula_id', matricula_id);
-      
-      // Novo prompt: mais restrito e focado nas notas
       const prompt = `
         Você é um pedagogo especialista em EJA. Gere uma síntese qualitativa PARCIAL para o aluno ${aluno.nome_completo}.
         Use um tom encorajador e profissional. 
