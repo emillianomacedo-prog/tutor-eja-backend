@@ -1073,13 +1073,39 @@ app.get('/api/relatorio-dados/:matricula_id', verificarToken, async (req, res) =
       .order('criada_em', { ascending: false })
       .limit(3);
 
+    // BUSCA AS OFICINAS DO ALUNO
+    const { data: oficinasAluno } = await supabase
+      .from('oficinas_presenciais')
+      .select(`
+        nota,
+        oficinas (
+          data_hora, tema, competencia, objetivos, metodologia, fotos
+        )
+      `)
+      .eq('aluno_id', aluno_id);
+
+    // Formata as oficinas para enviar ao frontend
+    const oficinasFormatadas = (oficinasAluno || [])
+      .filter(o => o.oficinas) // Garante que a oficina existe
+      .map(o => ({
+        nota: o.nota,
+        data_hora: o.oficinas.data_hora,
+        tema: o.oficinas.tema,
+        competencia: o.oficinas.competencia,
+        objetivos: o.oficinas.objetivos,
+        metodologia: o.oficinas.metodologia,
+        fotos: o.oficinas.fotos || []
+      }))
+      .sort((a, b) => new Date(a.data_hora) - new Date(b.data_hora)); // Ordena da mais antiga para a mais recente
+
     return res.json({
       aluno: aluno.nome_completo,
       turma: matricula.turma,
       segmento: matricula.segmento,
       notas: notas || [],
       sintese: sintese,
-      mensagens: mensagens || []
+      mensagens: mensagens || [],
+      oficinas: oficinasFormatadas // Envia as oficinas no JSON
     });
   } catch (err) {
     console.error("Erro ao gerar dados do PDF:", err);
