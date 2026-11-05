@@ -647,6 +647,22 @@ app.post('/api/chat', async (req, res) => {
     return res.status(500).json({ erro: "Erro" }); 
   }
 });
+app.get('/api/admin/oficinas/:id', verificarToken, async (req, res) => {
+  try {
+    const { data, error } = await supabase.from('oficinas')
+      .select(`
+        *,
+        oficinas_presenciais ( aluno_id, nota, alunos ( nome_completo, cpf ) )
+      `)
+      .eq('id', req.params.id)
+      .single();
+      
+    if (error) throw error;
+    return res.json(data);
+  } catch (err) {
+    return res.status(500).json({ erro: 'Erro ao buscar oficina' });
+  }
+});
 
 app.get('/api/admin/catalogo/:segmento', verificarToken, async (req, res) => {
   const { segmento } = req.params;
