@@ -21,7 +21,7 @@ const transporter = nodemailer.createTransport({
 });
 
 const NOTA_MINIMA = 60;
-const MAX_TENTATIVAS_ATIVIDADE = 2; // Alterado para 2 tentativas
+const MAX_TENTATIVAS_ATIVIDADE = 2;
 const MAX_TENTATIVAS_MURAL = 5;
 const CONCLUSAO_ENVIADA = new Map();
 const INTERVALO_CONCLUSAO_MS = 24 * 60 * 60 * 1000;
@@ -589,7 +589,6 @@ app.post('/api/chat', async (req, res) => {
     let habilidadeFoco = null;
     let areaFoco = null;
 
-    // 1. Tenta extrair a habilidade da mensagem atual
     const matchHab = mensagemAluno.match(/(C\d+H\d+)/i);
     if (matchHab) habilidadeFoco = matchHab[0].toUpperCase();
 
@@ -601,106 +600,93 @@ app.post('/api/chat', async (req, res) => {
             .replace('ciencias humanas', 'ciencias_humanas');
     }
 
-    // 2. Se não encontrou na mensagem atual, busca no histórico (caso o aluno digite apenas "Sim")
-    if (!habilidadeFoco && historico.length > 0) {
-        // Olha para trás no histórico para achar a última menção a uma habilidade
-        for (let i = historico.length - 1; i >= 0; i--) {
-            const msg = historico[i].texto;
-            const matchHist = msg.match(/(C\d+H\d+)/i);
-            if (matchHist) {
-                habilidadeFoco = matchHist[0].toUpperCase();
-                // Tenta pegar a área do mesmo histórico ou assume a área do banco depois
-                const matchAreaHist = msg.match(/(linguagens|matemática|matematica|ciências da natureza|ciencias da natureza|ciências humanas|ciencias humanas)/i);
-                if (matchAreaHist) {
-                     areaFoco = matchAreaHist[0].toLowerCase()
-                        .normalize('NFD').replace(/[\u0300-\u036f]/g, "")
-                        .replace('ciencias da natureza', 'ciencias_natureza')
-                        .replace('ciencias humanas', 'ciencias_humanas');
-                }
-                break;
-            }
-        }
-    }
-
     if (!habilidadeFoco) {
-        const msgInicial = "Olá! Eu sou o Tutor IA. Qual habilidade você gostaria de ler hoje? Acesse o menu ☰ e vá em 'Livros' para escolher uma!";
+        const msgInicial = "Olá! Eu sou o Tutor IA. Qual habilidade você gostaria de estudar hoje? Acesse o menu ☰ e vá em 'Livros' para escolher uma!";
         return res.json({ resposta: msgInicial });
     }
 
-    // 3. Busca a habilidade no banco
-    let queryHab = supabase.from('habilidades_a_desenvolver')
-      .select('*')
-      .eq('matricula_id', matricula_id)
-      .eq('habilidade_codigo', habilidadeFoco);
+    // 1. Busca a descrição oficial da habilidade no catálogo
+    let queryCat = supabase.from('catalogo_habilidades')
+      .select('descricao, area')
+      .eq('habilidade_codigo', habilidadeFoco)
+      .eq('segmento', segmentoAluno);
       
-    if (areaFoco) queryHab = queryHab.eq('area', areaFoco);
+    if (areaFoco) queryCat = queryCat.eq('area', areaFoco);
+    const { data: habCatalogo } = await queryCat.limit(1).single();
 
-    const { data: habInfo, error: errHabInfo } = await queryHab.limit(1).single();
-
-    if (errHabInfo || !habInfo) {
-        return res.json({ resposta: `Habilidade ${habilidadeFoco} não encontrada.` });
-    }
-    if (habInfo.status === 'concluida') {
-        return res.json({ resposta: `A leitura da habilidade ${habilidadeFoco} já foi concluída! Você pode escolher outra no menu ☰ > Livros.` });
+    if (!habCatalogo) {
+        return res.json({ resposta: "Habilidade não encontrada no catálogo." });
     }
 
-    const chunksLidos = habInfo.chunks_lidos || 0;
-    const palavrasDeAcerto = /(sim|li|acabei|terminei|prosseguir|proximo|próximo|ok|entendi|pode continuar)/i;
+    const descricaoHabilidade = habCatalogo.descricao;
+    const areaHabilidade = habCatalogo.area;
+
+    // 2. Busca os trechos do livro (RAG)
+    let textoBusca = mensagemAluno;
+    if (mensagemAluno.length < 20) {
+        textoBusca = `Conteúdo sobre: ${descricaoHabilidade}`;
+    }
+
+    let contextoLivro = "";
+    let chunksUsados = [];
     
-    // Se a mensagem for uma confirmação e já houver histórico, avança o offset
-    const confirmouLeitura = palavrasDeAcerto.test(mensagemAluno) && historico.length > 0;
-    
-    let proximoOffset = chunksLidos;
-    if (confirmouLeitura) {
-        proximoOffset = chunksLidos + 1;
-        // Conclui a habilidade
-        await supabase.from('habilidades_a_desenvolver')
-            .update({ status: 'concluida' })
-            .eq('matricula_id', matricula_id)
-            .eq('habilidade_codigo', habilidadeFoco)
-            .eq('area', habInfo.area);
-
-        // NOVO LINK CLICÁVEL AQUI
-        const respostaConclusao = `🎉 Parabéns! Você concluiu toda a leitura da habilidade **${habilidadeFoco}** (${habInfo.area.replace('_', ' ')}). A lista de livros já foi atualizada.\n\n👉 [Clique aqui para escolher uma nova leitura](livros.html)`;
-        
-        await supabase.from('mensagens_chat').insert([{ texto: mensagemAluno, remetente: 'aluno', matricula_id }, { texto: respostaConclusao, remetente: 'ia', matricula_id }]);
-        return res.json({ resposta: respostaConclusao });
+    try {
+      const modelEmbed = new GoogleGenerativeAI(geminiKeys[0]).getGenerativeModel({ model: "gemini-embedding-001" });
+      const resultEmb = await modelEmbed.embedContent(textoBusca);
+      
+      const { data: chunks } = await supabase.rpc('match_chunks', { 
+          query_embedding: resultEmb.embedding.values, 
+          filter_habilidade: habilidadeFoco, 
+          filter_segmento: segmentoAluno, 
+          match_count: 5 
+      });
+      
+      if (chunks && chunks.length > 0) {
+          let chunksFiltrados = chunks;
+          if (areaFoco) {
+             chunksFiltrados = chunks.filter(c => c.area === areaFoco);
+             if (chunksFiltrados.length === 0) chunksFiltrados = chunks;
+          }
+          contextoLivro = chunksFiltrados.map(c => c.conteudo).join("\n\n---\n\n");
+          chunksUsados = chunksFiltrados.map(c => c.id);
+      }
+    } catch (err) { 
+      console.warn("Falha RAG:", err.message); 
     }
 
-    // 4. Busca o próximo chunk
-    const { data: chunk, error: errChunk } = await supabase.rpc('buscar_proximo_chunk', {
-        p_habilidade: habilidadeFoco,
-        p_segmento: segmentoAluno,
-        p_offset: proximoOffset,
-        p_area: habInfo.area
-    });
+    // 3. Monta o Prompt focado no conteúdo
+    const systemPrompt = `
+      Você é o TUTOR NOVA EJA, um assistente de leitura e estudos.
+      
+      O aluno selecionou a habilidade: **${habilidadeFoco}** (${areaHabilidade.replace('_', ' ')}).
+      O objetivo oficial desta habilidade é: "${descricaoHabilidade}".
 
-    if (errChunk || !chunk || chunk.length === 0) {
-        if (proximoOffset === 0) {
-            const respostaErro = `Puxa, ainda não encontrei o texto desta habilidade no meu banco de dados. Verifique se o professor já cadastrou o conteúdo no módulo de Livros. Enquanto isso, que tal escolher outra habilidade no menu ☰?`;
-            await supabase.from('mensagens_chat').insert([{ texto: mensagemAluno, remetente: 'aluno', matricula_id }, { texto: respostaErro, remetente: 'ia', matricula_id }]);
-            return res.json({ resposta: respostaErro });
-        }
+      Aqui estão os trechos do livro didático referentes a esta habilidade:
+      ${contextoLivro || '(Nenhum trecho específico encontrado. Use seu conhecimento geral sobre o tema para explicar.)'}
 
-        // Conclui a habilidade
-        await supabase.from('habilidades_a_desenvolver')
-            .update({ status: 'concluida' })
-            .eq('matricula_id', matricula_id)
-            .eq('habilidade_codigo', habilidadeFoco)
-            .eq('area', habInfo.area);
+      SUAS DIRETRIZES:
+      1. Aja como um livro interativo. Explique o conteúdo de forma clara, didática e em etapas (Microlearning).
+      2. Responda à dúvida do aluno usando os trechos acima como base.
+      3. NÃO peça para o aluno fazer exercícios, entregar tarefas ou enviar respostas. Ele fará isso na tela de Atividades.
+      4. NÃO faça perguntas reflexivas complexas. Se precisar interagir, pergunte apenas se ele quer saber mais sobre algum ponto específico do texto.
+      5. Se o aluno apenas cumprimentar (ex: "Oi" ou "Quero estudar"), apresente um resumo inicial do tema da habilidade.
+    `;
 
-        const respostaConclusao = `🎉 Parabéns! Você concluiu toda a leitura da habilidade **${habilidadeFoco}** (${habInfo.area.replace('_', ' ')}). A lista de livros já foi atualizada.`;
-        await supabase.from('mensagens_chat').insert([{ texto: mensagemAluno, remetente: 'aluno', matricula_id }, { texto: respostaConclusao, remetente: 'ia', matricula_id }]);
-        return res.json({ resposta: respostaConclusao });
-    }
+    // 4. Gera a resposta
+    const respostaIA = await gerarRespostaIA(systemPrompt, historico, mensagemAluno);
 
-    const textoChunk = chunk[0].conteudo;
-    const respostaIA = `📖 **Leitura da Habilidade ${habilidadeFoco} (${habInfo.area.replace('_', ' ')}):**\n\n${textoChunk}\n\n_Quando terminar de ler, digite "Sim" ou "Li" para prosseguir para a próxima parte do conteúdo._`;
-
+    // 5. Salva no histórico
     await supabase.from('mensagens_chat').insert([
       { texto: mensagemAluno, remetente: 'aluno', matricula_id },
-      { texto: respostaIA, remetente: 'ia', matricula_id, chunks_referenciados: [chunk[0].id] }
+      { texto: respostaIA, remetente: 'ia', matricula_id, chunks_referenciados: chunksUsados }
     ]);
+
+    // 6. Marca a habilidade como concluída após a interação
+    await supabase.from('habilidades_a_desenvolver')
+        .update({ status: 'concluida' })
+        .eq('matricula_id', matricula_id)
+        .eq('habilidade_codigo', habilidadeFoco)
+        .eq('area', areaHabilidade);
 
     return res.json({ resposta: respostaIA });
 
