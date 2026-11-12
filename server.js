@@ -9,7 +9,7 @@ const nodemailer = require('nodemailer');
 
 const app = express();
 app.use(cors());
-app.use(express.json({ limit: '10mb' })); // Aumentado para suportar fotos Base64
+app.use(express.json({ limit: '10mb' }));
 
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
@@ -307,21 +307,41 @@ app.patch('/api/atividades/:id/rascunho', async (req, res) => {
 app.post('/api/atividades/:id/responder', async (req, res) => {
   const { aluno_id, resposta, segmento, matricula_id, arquivo_url } = req.body;
   if (!aluno_id || (!resposta && !arquivo_url)) return res.status(400).json({ erro: 'Dados incompletos' });
+  
   try {
     const alunoIdReal = await resolverAlunoId(aluno_id);
     const { data: atividade, error: errAtiv } = await supabase.from('atividades').select('*').eq('id', req.params.id).single();
     if (errAtiv || !atividade) return res.status(404).json({ erro: 'Atividade não encontrada' });
+    
     const { data: atual } = await supabase.from('respostas_atividades').select('tentativas, status').eq('atividade_id', req.params.id).eq('aluno_id', alunoIdReal).maybeSingle();
     if (atual?.status === 'FINALIZADA' || atual?.status === 'AGUARDANDO_CORRECAO') return res.status(400).json({ erro: 'Atividade já finalizada ou em correção.' });
+
     const tentativas = (atual?.tentativas || 0) + 1;
     let nota = null, statusSugerido = 'AGUARDANDO_CORRECAO', feedback = 'Sua resposta foi enviada! O professor avaliará em breve.', corrigido_por = null;
     
     if (atividade.tipo === 'objetiva') {
+      // REGRA DE NEGÓCIO: Máximo de 2 tentativas para questões objetivas
+      if (tentativas > 2) {
+          return res.status(400).json({ erro: 'Você já esgotou as tentativas para esta questão.' });
+      }
+
       const acertou = String(resposta).trim().toLowerCase() === String(atividade.gabarito || '').trim().toLowerCase();
       nota = acertou ? 100 : 0;
-      statusSugerido = nota >= 60 ? 'FINALIZADA' : 'REFAZER';
-      feedback = acertou ? 'Resposta correta! Muito bem.' : 'Resposta incorreta. Tente novamente.';
       corrigido_por = 'gabarito';
+
+      if (acertou) {
+        statusSugerido = 'FINALIZADA';
+        feedback = 'Resposta correta! Muito bem.';
+      } else {
+        // Se errou na 1ª tentativa, pode refazer. Se errou na 2ª, zera de vez.
+        if (tentativas >= 2) {
+            statusSugerido = 'FINALIZADA';
+            feedback = 'Resposta incorreta. Você esgotou suas 2 tentativas e a nota final é 0.';
+        } else {
+            statusSugerido = 'REFAZER';
+            feedback = 'Resposta incorreta. Você tem mais 1 tentativa.';
+        }
+      }
     }
 
     const { data, error } = await supabase.from('respostas_atividades').upsert({
@@ -647,22 +667,6 @@ app.post('/api/chat', async (req, res) => {
     return res.status(500).json({ erro: "Erro" }); 
   }
 });
-app.get('/api/admin/oficinas/:id', verificarToken, async (req, res) => {
-  try {
-    const { data, error } = await supabase.from('oficinas')
-      .select(`
-        *,
-        oficinas_presenciais ( aluno_id, nota, alunos ( nome_completo, cpf ) )
-      `)
-      .eq('id', req.params.id)
-      .single();
-      
-    if (error) throw error;
-    return res.json(data);
-  } catch (err) {
-    return res.status(500).json({ erro: 'Erro ao buscar oficina' });
-  }
-});
 
 app.get('/api/admin/catalogo/:segmento', verificarToken, async (req, res) => {
   const { segmento } = req.params;
@@ -741,7 +745,7 @@ app.get('/api/admin/alunos', verificarToken, async (req, res) => {
       const { data: relatorio } = await supabase.from('relatorios_oficiais').select('*').eq('matricula_id', m.id).single();
       return { 
         matricula_id: m.id, 
-        aluno_id: m.alunos.id, // Adicionado o aluno_id para o payload das oficinas
+        aluno_id: m.alunos.id,
         nome: m.alunos.nome_completo, 
         cpf: m.alunos.cpf, 
         segmento: m.segmento, 
@@ -760,9 +764,32 @@ app.get('/api/admin/alertas', verificarToken, async (req, res) => {
   try {
     const { data: alertas, error } = await supabase
       .from('alertas_coordenacao')
-      .select(`id, tipo, mensagem_original, status, criado_em, matriculas_estudos ( id, alunos ( nome_completo, telefone_whatsapp, email ) )`)
+      .select(`
+        id, tipo, mensagem_original, status, criado_em, 
+        matriculas_estudos ( 
+          id, 
+          alunos ( nome_completo, telefone_whatsapp, email ) 
+        )
+      `)
       .eq('status', 'pendente');
+      
     if (error) throw error;
+
+    for (let alerta of alertas) {
+        if (alerta.tipo === 'correcao_pendente') {
+            const { data: resposta } = await supabase.from('respostas_atividades')
+                .select('atividade_id, atividades(enunciado)')
+                .eq('matricula_id', alerta.matriculas_estudos.id)
+                .eq('status', 'AGUARDANDO_CORRECAO')
+                .limit(1)
+                .single();
+            
+            if (resposta && resposta.atividades) {
+                alerta.contexto_atividade = resposta.atividades.enunciado;
+            }
+        }
+    }
+
     return res.json(alertas || []);
   } catch (error) { 
     console.error("Erro ao buscar alertas:", error);
@@ -912,23 +939,57 @@ app.get('/api/admin/oficinas', verificarToken, async (req, res) => {
   }
 });
 
+app.get('/api/admin/oficinas/:id', verificarToken, async (req, res) => {
+  try {
+    const { data, error } = await supabase.from('oficinas')
+      .select(`
+        *,
+        oficinas_presenciais ( aluno_id, nota, alunos ( nome_completo, cpf ) )
+      `)
+      .eq('id', req.params.id)
+      .single();
+      
+    if (error) throw error;
+    return res.json(data);
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ erro: 'Erro ao buscar oficina' });
+  }
+});
+
 app.post('/api/admin/oficinas', verificarToken, async (req, res) => {
-  const { data_hora, segmento, competencia, habilidades, tema, objetivos, metodologia, recursos, avaliacao, fotos, alunos_notas } = req.body;
+  const { id, data_hora, segmento, competencia, habilidades, tema, objetivos, metodologia, recursos, avaliacao, fotos, alunos_notas } = req.body;
   
   try {
     const token = req.headers.authorization?.split(' ')[1];
     const coordId = token.split('_')[1];
 
-    const { data: oficina, error: errOfi } = await supabase.from('oficinas').insert({
-      professor_id: coordId, data_hora, segmento, competencia, habilidades,
-      tema, objetivos, metodologia, recursos, avaliacao, fotos: fotos || []
-    }).select().single();
+    let oficinaId = id;
 
-    if (errOfi) throw errOfi;
+    if (oficinaId) {
+      const { error: errUpdate } = await supabase.from('oficinas').update({
+        data_hora, segmento, competencia, habilidades,
+        tema, objetivos, metodologia, recursos, avaliacao,
+        ...(fotos && fotos.length > 0 ? { fotos } : {}) 
+      }).eq('id', oficinaId);
+      
+      if (errUpdate) throw errUpdate;
+      
+      await supabase.from('oficinas_presenciais').delete().eq('oficina_id', oficinaId);
+      
+    } else {
+      const { data: novaOficina, error: errOfi } = await supabase.from('oficinas').insert({
+        professor_id: coordId, data_hora, segmento, competencia, habilidades,
+        tema, objetivos, metodologia, recursos, avaliacao, fotos: fotos || []
+      }).select().single();
+      
+      if (errOfi) throw errOfi;
+      oficinaId = novaOficina.id;
+    }
 
     if (alunos_notas && alunos_notas.length > 0) {
       const notasInsert = alunos_notas.map(a => ({
-        oficina_id: oficina.id,
+        oficina_id: oficinaId,
         aluno_id: a.aluno_id,
         area: a.area, 
         nota: a.nota,
@@ -940,10 +1001,10 @@ app.post('/api/admin/oficinas', verificarToken, async (req, res) => {
       if (errNotas) throw errNotas;
     }
 
-    return res.status(201).json({ mensagem: 'Oficina registrada com sucesso!', oficina });
+    return res.status(201).json({ mensagem: 'Oficina salva com sucesso!', id: oficinaId });
   } catch (err) {
     console.error('Erro ao salvar oficina:', err);
-    return res.status(500).json({ erro: 'Erro ao registrar oficina' });
+    return res.status(500).json({ erro: 'Erro ao salvar oficina' });
   }
 });
 
@@ -952,7 +1013,6 @@ app.post('/api/admin/oficinas', verificarToken, async (req, res) => {
 // =====================================================================
 
 app.post('/api/oficinas', verificarToken, async (req, res) => {
-  // Rota antiga mantida por segurança
   const { aluno_id, area, nota, data_oficina, observacao } = req.body;
   try {
     const alunoIdReal = await resolverAlunoId(aluno_id);
@@ -1066,14 +1126,22 @@ app.get('/api/relatorio-dados/:matricula_id', verificarToken, async (req, res) =
       sintese = await gerarRespostaIA(prompt, [], "Gerar Síntese Parcial");
     }
 
-    const { data: mensagens } = await supabase.from('mensagens_chat')
-      .select('texto, criada_em')
-      .eq('matricula_id', matricula_id)
-      .eq('remetente', 'aluno')
-      .order('criada_em', { ascending: false })
+    const { data: respostasAtividades } = await supabase
+      .from('respostas_atividades')
+      .select(`
+        resposta,
+        atividades ( enunciado )
+      `)
+      .eq('aluno_id', aluno_id)
+      .eq('status', 'FINALIZADA')
+      .order('submetido_em', { ascending: false })
       .limit(3);
 
-    // BUSCA AS OFICINAS DO ALUNO
+    const citacoesFormatadas = (respostasAtividades || []).map(r => ({
+      pergunta: r.atividades?.enunciado || 'Atividade sem enunciado',
+      resposta: r.resposta
+    }));
+
     const { data: oficinasAluno } = await supabase
       .from('oficinas_presenciais')
       .select(`
@@ -1084,9 +1152,8 @@ app.get('/api/relatorio-dados/:matricula_id', verificarToken, async (req, res) =
       `)
       .eq('aluno_id', aluno_id);
 
-    // Formata as oficinas para enviar ao frontend
     const oficinasFormatadas = (oficinasAluno || [])
-      .filter(o => o.oficinas) // Garante que a oficina existe
+      .filter(o => o.oficinas) 
       .map(o => ({
         nota: o.nota,
         data_hora: o.oficinas.data_hora,
@@ -1096,7 +1163,7 @@ app.get('/api/relatorio-dados/:matricula_id', verificarToken, async (req, res) =
         metodologia: o.oficinas.metodologia,
         fotos: o.oficinas.fotos || []
       }))
-      .sort((a, b) => new Date(a.data_hora) - new Date(b.data_hora)); // Ordena da mais antiga para a mais recente
+      .sort((a, b) => new Date(a.data_hora) - new Date(b.data_hora));
 
     return res.json({
       aluno: aluno.nome_completo,
@@ -1104,8 +1171,9 @@ app.get('/api/relatorio-dados/:matricula_id', verificarToken, async (req, res) =
       segmento: matricula.segmento,
       notas: notas || [],
       sintese: sintese,
-      mensagens: mensagens || [],
-      oficinas: oficinasFormatadas // Envia as oficinas no JSON
+      mensagens: [],
+      citacoes: citacoesFormatadas, 
+      oficinas: oficinasFormatadas 
     });
   } catch (err) {
     console.error("Erro ao gerar dados do PDF:", err);
