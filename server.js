@@ -669,7 +669,7 @@ app.post('/api/chat', async (req, res) => {
       avisoConclusao = `SISTEMA: O aluno concluiu a habilidade ${habilidadeFoco}. Parabenize-o.`;
     }
 
-    const systemPrompt = `Você é o TUTOR NOVA EJA. Habilidade em foco: ${habilidadeFoco || 'Geral'}. ${avisoConclusao} DIRETRIZES: Microlearning (3 parágrafos). Termine com UMA pergunta. BLOQUEIO: ${listaObrigatorias}. APOIO: "${contextoLivro}"`;
+    const systemPrompt = `Você é o TUTOR NOVA EJA. Habilidade em foco: ${habilidadeFoco || 'Geral'}. ${avisoConclusao} DIRETRIZES: Seu objetivo é ser um professor particular explicando o conteúdo do livro. Faça explicações em formato de Microlearning (máximo 3 parágrafos). Termine sempre com UMA pergunta de reflexão sobre o tema (ex: "O que você entendeu sobre isso?" ou "Faz sentido para você?"). NÃO solicite que o aluno envie ou entregue atividades, pois ele fará isso na tela específica de Atividades. BLOQUEIO: ${listaObrigatorias}. APOIO: "${contextoLivro}"`;
 
     const respostaBruta = await gerarRespostaIA(systemPrompt, historico, mensagemAluno);
     const { textoLimpo, registros } = extrairTagsQualitativas(respostaBruta, matricula_id);
