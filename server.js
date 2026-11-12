@@ -653,11 +653,18 @@ app.post('/api/chat', async (req, res) => {
     let proximoOffset = chunksLidos;
     if (confirmouLeitura) {
         proximoOffset = chunksLidos + 1;
+        // Conclui a habilidade
         await supabase.from('habilidades_a_desenvolver')
-            .update({ chunks_lidos: proximoOffset })
+            .update({ status: 'concluida' })
             .eq('matricula_id', matricula_id)
             .eq('habilidade_codigo', habilidadeFoco)
             .eq('area', habInfo.area);
+
+        // NOVO LINK CLICÁVEL AQUI
+        const respostaConclusao = `🎉 Parabéns! Você concluiu toda a leitura da habilidade **${habilidadeFoco}** (${habInfo.area.replace('_', ' ')}). A lista de livros já foi atualizada.\n\n👉 [Clique aqui para escolher uma nova leitura](livros.html)`;
+        
+        await supabase.from('mensagens_chat').insert([{ texto: mensagemAluno, remetente: 'aluno', matricula_id }, { texto: respostaConclusao, remetente: 'ia', matricula_id }]);
+        return res.json({ resposta: respostaConclusao });
     }
 
     // 4. Busca o próximo chunk
