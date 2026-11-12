@@ -586,13 +586,13 @@ app.post('/api/chat', async (req, res) => {
     const { data: matricula } = await supabase.from('matriculas_estudos').select('segmento').eq('id', matricula_id).single();
     const segmentoAluno = matricula ? matricula.segmento : 'fundamental';
 
-    // 1. Extrai a Habilidade (ex: C1H4)
     let habilidadeFoco = null;
+    let areaFoco = null;
+
+    // 1. Tenta extrair a habilidade da mensagem atual
     const matchHab = mensagemAluno.match(/(C\d+H\d+)/i);
     if (matchHab) habilidadeFoco = matchHab[0].toUpperCase();
 
-    // 2. Extrai a Área (ex: ciencias_humanas)
-    let areaFoco = null;
     const matchArea = mensagemAluno.match(/(linguagens|matemática|matematica|ciências da natureza|ciencias da natureza|ciências humanas|ciencias humanas)/i);
     if (matchArea) {
         areaFoco = matchArea[0].toLowerCase()
@@ -601,12 +601,33 @@ app.post('/api/chat', async (req, res) => {
             .replace('ciencias humanas', 'ciencias_humanas');
     }
 
+    // 2. Se não encontrou na mensagem atual, busca no histórico (caso o aluno digite apenas "Sim")
+    if (!habilidadeFoco && historico.length > 0) {
+        // Olha para trás no histórico para achar a última menção a uma habilidade
+        for (let i = historico.length - 1; i >= 0; i--) {
+            const msg = historico[i].texto;
+            const matchHist = msg.match(/(C\d+H\d+)/i);
+            if (matchHist) {
+                habilidadeFoco = matchHist[0].toUpperCase();
+                // Tenta pegar a área do mesmo histórico ou assume a área do banco depois
+                const matchAreaHist = msg.match(/(linguagens|matemática|matematica|ciências da natureza|ciencias da natureza|ciências humanas|ciencias humanas)/i);
+                if (matchAreaHist) {
+                     areaFoco = matchAreaHist[0].toLowerCase()
+                        .normalize('NFD').replace(/[\u0300-\u036f]/g, "")
+                        .replace('ciencias da natureza', 'ciencias_natureza')
+                        .replace('ciencias humanas', 'ciencias_humanas');
+                }
+                break;
+            }
+        }
+    }
+
     if (!habilidadeFoco) {
         const msgInicial = "Olá! Eu sou o Tutor IA. Qual habilidade você gostaria de ler hoje? Acesse o menu ☰ e vá em 'Livros' para escolher uma!";
         return res.json({ resposta: msgInicial });
     }
 
-    // 3. Busca a habilidade do aluno, filtrando pela área (se informada)
+    // 3. Busca a habilidade no banco
     let queryHab = supabase.from('habilidades_a_desenvolver')
       .select('*')
       .eq('matricula_id', matricula_id)
@@ -617,7 +638,7 @@ app.post('/api/chat', async (req, res) => {
     const { data: habInfo, error: errHabInfo } = await queryHab.limit(1).single();
 
     if (errHabInfo || !habInfo) {
-        return res.json({ resposta: "Habilidade não encontrada. Verifique se você selecionou a área correta." });
+        return res.json({ resposta: `Habilidade ${habilidadeFoco} não encontrada.` });
     }
     if (habInfo.status === 'concluida') {
         return res.json({ resposta: `A leitura da habilidade ${habilidadeFoco} já foi concluída! Você pode escolher outra no menu ☰ > Livros.` });
@@ -625,6 +646,8 @@ app.post('/api/chat', async (req, res) => {
 
     const chunksLidos = habInfo.chunks_lidos || 0;
     const palavrasDeAcerto = /(sim|li|acabei|terminei|prosseguir|proximo|próximo|ok|entendi|pode continuar)/i;
+    
+    // Se a mensagem for uma confirmação e já houver histórico, avança o offset
     const confirmouLeitura = palavrasDeAcerto.test(mensagemAluno) && historico.length > 0;
     
     let proximoOffset = chunksLidos;
@@ -634,15 +657,15 @@ app.post('/api/chat', async (req, res) => {
             .update({ chunks_lidos: proximoOffset })
             .eq('matricula_id', matricula_id)
             .eq('habilidade_codigo', habilidadeFoco)
-            .eq('area', habInfo.area); // Filtra pela área também na atualização
+            .eq('area', habInfo.area);
     }
 
-    // 4. Busca o próximo chunk, passando a área correta
+    // 4. Busca o próximo chunk
     const { data: chunk, error: errChunk } = await supabase.rpc('buscar_proximo_chunk', {
         p_habilidade: habilidadeFoco,
         p_segmento: segmentoAluno,
         p_offset: proximoOffset,
-        p_area: habInfo.area // Passa a área específica para a função RPC
+        p_area: habInfo.area
     });
 
     if (errChunk || !chunk || chunk.length === 0) {
@@ -652,6 +675,7 @@ app.post('/api/chat', async (req, res) => {
             return res.json({ resposta: respostaErro });
         }
 
+        // Conclui a habilidade
         await supabase.from('habilidades_a_desenvolver')
             .update({ status: 'concluida' })
             .eq('matricula_id', matricula_id)
