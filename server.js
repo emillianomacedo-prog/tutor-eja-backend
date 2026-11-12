@@ -664,7 +664,7 @@ app.post('/api/chat', async (req, res) => {
     const textoChunk = chunk[0].conteudo;
     
     // Monta a resposta com botões clicáveis
-    const respostaIA = `📖 **Leitura da Habilidade ${habilidadeFoco}**\n\n${textoChunk}\n\n---\n👉 O que deseja fazer?\n\n[Avançar para a próxima página](chat.html?msg=Prosseguir)\n\n[Concluir leitura e voltar ao menu](chat.html?msg=Sair)`;
+        const respostaIA = `📖 **Leitura da Habilidade ${habilidadeFoco}**\n\n${textoChunk}\n\n---\n👉 O que deseja fazer?\n\n*   [Avançar para a próxima página](?msg=Prosseguir)\n*   [Concluir leitura e voltar ao menu](?msg=Sair)`;
 
     await supabase.from('mensagens_chat').insert([
       { texto: mensagemAluno, remetente: 'aluno', matricula_id },
