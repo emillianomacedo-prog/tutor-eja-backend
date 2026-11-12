@@ -600,10 +600,26 @@ app.post('/api/chat', async (req, res) => {
             .replace('ciencias humanas', 'ciencias_humanas');
     }
 
+    // ---------------------------------------------------------
+    // NOVA LÓGICA: Dá baixa na habilidade IMEDIATAMENTE ao clicar
+    // ---------------------------------------------------------
+    if (habilidadeFoco) {
+        let queryUpdate = supabase.from('habilidades_a_desenvolver')
+            .update({ status: 'concluida' })
+            .eq('matricula_id', matricula_id)
+            .eq('habilidade_codigo', habilidadeFoco);
+            
+        if (areaFoco) queryUpdate = queryUpdate.eq('area', areaFoco);
+        
+        await queryUpdate;
+    }
+
     if (!habilidadeFoco) {
         const msgInicial = "Olá! Eu sou o Tutor IA. Qual habilidade você gostaria de estudar hoje? Acesse o menu ☰ e vá em 'Livros' para escolher uma!";
         return res.json({ resposta: msgInicial });
     }
+
+    // ... (o resto do código do RAG continua igual)
 
     // 1. Busca a descrição oficial da habilidade no catálogo
     let queryCat = supabase.from('catalogo_habilidades')
