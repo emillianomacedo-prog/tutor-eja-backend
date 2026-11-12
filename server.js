@@ -21,7 +21,7 @@ const transporter = nodemailer.createTransport({
 });
 
 const NOTA_MINIMA = 60;
-const MAX_TENTATIVAS_ATIVIDADE = 3;
+const MAX_TENTATIVAS_ATIVIDADE = 2; // Alterado para 2 tentativas
 const MAX_TENTATIVAS_MURAL = 5;
 const CONCLUSAO_ENVIADA = new Map();
 const INTERVALO_CONCLUSAO_MS = 24 * 60 * 60 * 1000;
@@ -315,7 +315,6 @@ app.post('/api/atividades/:id/responder', async (req, res) => {
     
     const { data: atual } = await supabase.from('respostas_atividades').select('tentativas, status').eq('atividade_id', req.params.id).eq('aluno_id', alunoIdReal).maybeSingle();
     
-    // Se já estiver finalizada, bloqueia o envio
     if (atual?.status === 'FINALIZADA' || atual?.status === 'AGUARDANDO_CORRECAO') {
         return res.status(400).json({ erro: 'Atividade já finalizada ou em correção.' });
     }
@@ -324,7 +323,6 @@ app.post('/api/atividades/:id/responder', async (req, res) => {
     let nota = null, statusSugerido = 'AGUARDANDO_CORRECAO', feedback = 'Sua resposta foi enviada! O professor avaliará em breve.', corrigido_por = null;
     
     if (atividade.tipo === 'objetiva') {
-      // REGRA DE NEGÓCIO: Máximo de 2 tentativas
       if (tentativas > 2) {
           return res.status(400).json({ erro: 'Você já esgotou as tentativas para esta questão.' });
       }
@@ -337,7 +335,6 @@ app.post('/api/atividades/:id/responder', async (req, res) => {
         statusSugerido = 'FINALIZADA';
         feedback = 'Resposta correta! Muito bem.';
       } else {
-        // Se errou na 2ª tentativa, FINALIZA com zero.
         if (tentativas >= 2) {
             statusSugerido = 'FINALIZADA'; 
             feedback = 'Resposta incorreta. Você esgotou suas 2 tentativas e a nota final é 0.';
@@ -348,7 +345,6 @@ app.post('/api/atividades/:id/responder', async (req, res) => {
       }
     }
 
-    // SALVA A RESPOSTA NO BANCO
     const { data, error } = await supabase.from('respostas_atividades').upsert({
       atividade_id: req.params.id, 
       aluno_id: alunoIdReal, 
@@ -364,12 +360,8 @@ app.post('/api/atividades/:id/responder', async (req, res) => {
       submetido_em: new Date().toISOString()
     }, { onConflict: 'atividade_id,aluno_id', ignoreDuplicates: false }).select().single();
 
-    if (error) {
-        console.error("Erro ao salvar no banco:", error);
-        return res.status(500).json({ erro: 'Erro ao salvar resposta no banco de dados.', detalhe: error.message });
-    }
+    if (error) throw error;
 
-    // Cria alerta apenas para subjetivas
     if (statusSugerido === 'AGUARDANDO_CORRECAO' && matricula_id) {
       try {
         await supabase.from('alertas_coordenacao').insert({ 
@@ -378,13 +370,15 @@ app.post('/api/atividades/:id/responder', async (req, res) => {
           mensagem_original: `Nova resposta subjetiva aguardando correção.`, 
           status: 'pendente' 
         });
-      } catch (errAlerta) {}
+      } catch (errAlerta) {
+        console.warn("Aviso: falha ao criar alerta:", errAlerta.message);
+      }
     }
     
     return res.json({ resposta: data });
   } catch (err) { 
-    console.error("ERRO NO SERVIDOR:", err); 
-    return res.status(500).json({ erro: 'Erro interno.' }); 
+    console.error("🚨 ERRO AO RESPONDER ATIVIDADE:", err.message, err.details || ''); 
+    return res.status(500).json({ erro: 'Erro ao salvar resposta', detalhe: err.message }); 
   }
 });
 
@@ -500,19 +494,15 @@ app.get('/api/aluno/:matricula_id/habilidades', async (req, res) => {
     const { data: matricula } = await supabase.from('matriculas_estudos').select('segmento').eq('id', matricula_id).single();
     if (!matricula) return res.status(404).json({ erro: "Matrícula não encontrada" });
     
-    // Busca as dispensadas
     const { data: dispensadas } = await supabase.from('habilidades_dispensadas').select('habilidade_codigo, area').eq('matricula_id', matricula_id);
     const dispensadasSet = new Set((dispensadas || []).map(d => `${d.area}_${d.habilidade_codigo}`));
 
-    // Busca o catálogo
     const { data: catalogo, error: errCat } = await supabase.from('catalogo_habilidades').select('habilidade_codigo, area, competencia, descricao').eq('segmento', matricula.segmento);
     if (errCat) throw errCat;
 
-    // Busca as habilidades do aluno (para saber quais estão concluídas)
     const { data: habsAluno } = await supabase.from('habilidades_a_desenvolver').select('habilidade_codigo, status').eq('matricula_id', matricula_id);
     const statusMap = Object.fromEntries((habsAluno || []).map(h => [h.habilidade_codigo, h.status]));
 
-    // Cruza os dados
     const catalogoFiltrado = catalogo
       .filter(h => !dispensadasSet.has(`${h.area}_${h.habilidade_codigo}`))
       .map(h => ({
@@ -596,18 +586,15 @@ app.post('/api/chat', async (req, res) => {
     const { data: matricula } = await supabase.from('matriculas_estudos').select('segmento').eq('id', matricula_id).single();
     const segmentoAluno = matricula ? matricula.segmento : 'fundamental';
 
-    // Busca a habilidade que o aluno quer estudar
     let habilidadeFoco = null;
     const matchHab = mensagemAluno.match(/(C\d+H\d+)/i);
     if (matchHab) habilidadeFoco = matchHab[0].toUpperCase();
 
-    // Se o aluno não especificou, e está no início, a IA pede para ele escolher
     if (!habilidadeFoco) {
         const msgInicial = "Olá! Eu sou o Tutor IA. Qual habilidade você gostaria de ler hoje? Acesse o menu ☰ e vá em 'Livros' para escolher uma!";
         return res.json({ resposta: msgInicial });
     }
 
-    // Busca a habilidade no banco para saber quantos chunks já foram lidos
     const { data: habInfo } = await supabase.from('habilidades_a_desenvolver')
       .select('*').eq('matricula_id', matricula_id).eq('habilidade_codigo', habilidadeFoco).single();
 
@@ -616,34 +603,34 @@ app.post('/api/chat', async (req, res) => {
         return res.json({ resposta: `A leitura da habilidade ${habilidadeFoco} já foi concluída! Você pode escolher outra no menu ☰ > Livros.` });
     }
 
-    // Lógica de leitura (Chunks)
     const chunksLidos = habInfo.chunks_lidos || 0;
     
-    // Verifica se o aluno está confirmando a leitura do chunk anterior
     const palavrasDeAcerto = /(sim|li|acabei|terminei|prosseguir|proximo|próximo|ok|entendi|pode continuar)/i;
     const confirmouLeitura = palavrasDeAcerto.test(mensagemAluno) && historico.length > 0;
     
     let proximoOffset = chunksLidos;
     
-    // Se confirmou que leu o chunk anterior, avança o offset
     if (confirmouLeitura) {
         proximoOffset = chunksLidos + 1;
-        // Atualiza o banco com o novo número de chunks lidos
         await supabase.from('habilidades_a_desenvolver')
             .update({ chunks_lidos: proximoOffset })
             .eq('matricula_id', matricula_id)
             .eq('habilidade_codigo', habilidadeFoco);
     }
 
-    // Busca o próximo chunk de texto no banco
     const { data: chunk, error: errChunk } = await supabase.rpc('buscar_proximo_chunk', {
         p_habilidade: habilidadeFoco,
         p_segmento: segmentoAluno,
         p_offset: proximoOffset
     });
 
-    // Se não houver mais texto, conclui a habilidade
     if (errChunk || !chunk || chunk.length === 0) {
+        if (proximoOffset === 0) {
+            const respostaErro = `Puxa, ainda não encontrei o texto desta habilidade no meu banco de dados. Verifique se o professor já cadastrou o conteúdo no módulo de Livros. Enquanto isso, que tal escolher outra habilidade no menu ☰?`;
+            await supabase.from('mensagens_chat').insert([{ texto: mensagemAluno, remetente: 'aluno', matricula_id }, { texto: respostaErro, remetente: 'ia', matricula_id }]);
+            return res.json({ resposta: respostaErro });
+        }
+
         await supabase.from('habilidades_a_desenvolver')
             .update({ status: 'concluida' })
             .eq('matricula_id', matricula_id)
@@ -654,10 +641,8 @@ app.post('/api/chat', async (req, res) => {
         return res.json({ resposta: respostaConclusao });
     }
 
-    // Se houver texto, envia o chunk para o aluno
     const textoChunk = chunk[0].conteudo;
     
-    // Pergunta se o aluno já leu para avançar
     const respostaIA = `📖 **Leitura da Habilidade ${habilidadeFoco}:**\n\n${textoChunk}\n\n_Quando terminar de ler, digite "Sim" ou "Li" para prosseguir para a próxima parte do conteúdo._`;
 
     await supabase.from('mensagens_chat').insert([
