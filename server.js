@@ -500,13 +500,25 @@ app.get('/api/aluno/:matricula_id/habilidades', async (req, res) => {
     const { data: matricula } = await supabase.from('matriculas_estudos').select('segmento').eq('id', matricula_id).single();
     if (!matricula) return res.status(404).json({ erro: "Matrícula não encontrada" });
     
+    // Busca as dispensadas
     const { data: dispensadas } = await supabase.from('habilidades_dispensadas').select('habilidade_codigo, area').eq('matricula_id', matricula_id);
     const dispensadasSet = new Set((dispensadas || []).map(d => `${d.area}_${d.habilidade_codigo}`));
 
+    // Busca o catálogo
     const { data: catalogo, error: errCat } = await supabase.from('catalogo_habilidades').select('habilidade_codigo, area, competencia, descricao').eq('segmento', matricula.segmento);
     if (errCat) throw errCat;
 
-    const catalogoFiltrado = catalogo.filter(h => !dispensadasSet.has(`${h.area}_${h.habilidade_codigo}`));
+    // Busca as habilidades do aluno (para saber quais estão concluídas)
+    const { data: habsAluno } = await supabase.from('habilidades_a_desenvolver').select('habilidade_codigo, status').eq('matricula_id', matricula_id);
+    const statusMap = Object.fromEntries((habsAluno || []).map(h => [h.habilidade_codigo, h.status]));
+
+    // Cruza os dados
+    const catalogoFiltrado = catalogo
+      .filter(h => !dispensadasSet.has(`${h.area}_${h.habilidade_codigo}`))
+      .map(h => ({
+        ...h,
+        status: statusMap[h.habilidade_codigo] || 'pendente'
+      }));
 
     catalogoFiltrado.sort((a, b) => {
       if (a.area !== b.area) return a.area.localeCompare(b.area);
