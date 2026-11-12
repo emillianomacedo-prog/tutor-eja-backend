@@ -314,13 +314,17 @@ app.post('/api/atividades/:id/responder', async (req, res) => {
     if (errAtiv || !atividade) return res.status(404).json({ erro: 'Atividade não encontrada' });
     
     const { data: atual } = await supabase.from('respostas_atividades').select('tentativas, status').eq('atividade_id', req.params.id).eq('aluno_id', alunoIdReal).maybeSingle();
-    if (atual?.status === 'FINALIZADA' || atual?.status === 'AGUARDANDO_CORRECAO') return res.status(400).json({ erro: 'Atividade já finalizada ou em correção.' });
+    
+    // Se já estiver finalizada, bloqueia o envio
+    if (atual?.status === 'FINALIZADA' || atual?.status === 'AGUARDANDO_CORRECAO') {
+        return res.status(400).json({ erro: 'Atividade já finalizada ou em correção.' });
+    }
 
     const tentativas = (atual?.tentativas || 0) + 1;
     let nota = null, statusSugerido = 'AGUARDANDO_CORRECAO', feedback = 'Sua resposta foi enviada! O professor avaliará em breve.', corrigido_por = null;
     
     if (atividade.tipo === 'objetiva') {
-      // REGRA DE NEGÓCIO: Máximo de 2 tentativas para questões objetivas
+      // REGRA DE NEGÓCIO: Máximo de 2 tentativas
       if (tentativas > 2) {
           return res.status(400).json({ erro: 'Você já esgotou as tentativas para esta questão.' });
       }
@@ -333,9 +337,9 @@ app.post('/api/atividades/:id/responder', async (req, res) => {
         statusSugerido = 'FINALIZADA';
         feedback = 'Resposta correta! Muito bem.';
       } else {
-        // Se errou na 1ª tentativa, pode refazer. Se errou na 2ª, zera de vez.
+        // Se errou na 2ª tentativa, FINALIZA com zero.
         if (tentativas >= 2) {
-            statusSugerido = 'FINALIZADA';
+            statusSugerido = 'FINALIZADA'; 
             feedback = 'Resposta incorreta. Você esgotou suas 2 tentativas e a nota final é 0.';
         } else {
             statusSugerido = 'REFAZER';
@@ -344,6 +348,7 @@ app.post('/api/atividades/:id/responder', async (req, res) => {
       }
     }
 
+    // SALVA A RESPOSTA NO BANCO
     const { data, error } = await supabase.from('respostas_atividades').upsert({
       atividade_id: req.params.id, 
       aluno_id: alunoIdReal, 
@@ -359,8 +364,12 @@ app.post('/api/atividades/:id/responder', async (req, res) => {
       submetido_em: new Date().toISOString()
     }, { onConflict: 'atividade_id,aluno_id', ignoreDuplicates: false }).select().single();
 
-    if (error) throw error;
+    if (error) {
+        console.error("Erro ao salvar no banco:", error);
+        return res.status(500).json({ erro: 'Erro ao salvar resposta no banco de dados.', detalhe: error.message });
+    }
 
+    // Cria alerta apenas para subjetivas
     if (statusSugerido === 'AGUARDANDO_CORRECAO' && matricula_id) {
       try {
         await supabase.from('alertas_coordenacao').insert({ 
@@ -369,15 +378,13 @@ app.post('/api/atividades/:id/responder', async (req, res) => {
           mensagem_original: `Nova resposta subjetiva aguardando correção.`, 
           status: 'pendente' 
         });
-      } catch (errAlerta) {
-        console.warn("Aviso: falha ao criar alerta:", errAlerta.message);
-      }
+      } catch (errAlerta) {}
     }
     
     return res.json({ resposta: data });
   } catch (err) { 
-    console.error("🚨 ERRO AO RESPONDER ATIVIDADE:", err.message, err.details || ''); 
-    return res.status(500).json({ erro: 'Erro ao salvar resposta', detalhe: err.message }); 
+    console.error("ERRO NO SERVIDOR:", err); 
+    return res.status(500).json({ erro: 'Erro interno.' }); 
   }
 });
 
