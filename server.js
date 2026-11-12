@@ -661,10 +661,22 @@ app.post('/api/chat', async (req, res) => {
         return res.json({ resposta: msgFim });
     }
 
-    const textoChunk = chunk[0].conteudo;
+     const textoChunkBruto = chunk[0].conteudo;
     
-    // Monta a resposta com botões clicáveis
-        const respostaIA = `📖 **Leitura da Habilidade ${habilidadeFoco}**\n\n${textoChunk}\n\n---\n👉 O que deseja fazer?\n\n*   [Avançar para a próxima página](?msg=Prosseguir)\n*   [Concluir leitura e voltar ao menu](?msg=Sair)`;
+    // LIMPEZA E FORMATAÇÃO DO TEXTO
+    let textoFormatado = textoChunkBruto;
+    
+    // 1. Remove espaços duplicados
+    textoFormatado = textoFormatado.replace(/[ \t]+/g, ' ');
+    
+    // 2. Corrige palavras quebradas no final da linha com hífen (ex: "produ- \n ção")
+    textoFormatado = textoFormatado.replace(/-\s+/g, '');
+    
+    // 3. Tenta criar parágrafos onde há pontos finais seguidos de espaços e letras maiúsculas
+    textoFormatado = textoFormatado.replace(/([.!?])\s+([A-ZÀ-Ú])/g, '$1\n\n$2');
+
+    // Monta a resposta com os botões
+    const respostaIA = `📖 **Leitura da Habilidade ${habilidadeFoco}**\n\n${textoFormatado}\n\n---\n👉 O que deseja fazer?\n\n[Avançar para a próxima página](?msg=Prosseguir)\n\n[Concluir leitura e voltar ao menu](?msg=Sair)`;
 
     await supabase.from('mensagens_chat').insert([
       { texto: mensagemAluno, remetente: 'aluno', matricula_id },
