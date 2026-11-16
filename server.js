@@ -1298,6 +1298,40 @@ app.get('/api/relatorio-dados/:matricula_id', verificarToken, async (req, res) =
 });
 
 app.get('/health', (req, res) => res.json({ status: 'healthy', uptime: process.uptime() }));
+// Listar todos os murais para o painel administrativo
+app.get('/api/admin/murais', verificarToken, async (req, res) => {
+  try {
+    const token = req.headers.authorization?.split(' ')[1];
+    const coordId = token.split('_')[1];
+
+    const { data: coord } = await supabase.from('coordenadores').select('papel, area').eq('id', coordId).single();
+
+    let query = supabase.from('murais').select('*').order('created_at', { ascending: false });
+
+    // Se for professor, filtra pela área dele
+    if (coord && coord.papel === 'professor' && coord.area) {
+      query = query.eq('area', coord.area);
+    }
+
+    const { data, error } = await query;
+    if (error) throw error;
+    return res.json(data);
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ erro: 'Erro ao listar murais' });
+  }
+});
+
+// Excluir um mural
+app.delete('/api/admin/murais/:id', verificarToken, async (req, res) => {
+  try {
+    const { error } = await supabase.from('murais').delete().eq('id', req.params.id);
+    if (error) throw error;
+    return res.json({ mensagem: 'Mural excluído' });
+  } catch (err) {
+    return res.status(500).json({ erro: 'Erro ao excluir mural' });
+  }
+});
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`🚀 Backend Rodando na porta ${PORT}`));
