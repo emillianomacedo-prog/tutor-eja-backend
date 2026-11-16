@@ -920,13 +920,21 @@ app.post('/api/murais/:id/avaliar', async (req, res) => {
 });
 
 app.post('/api/murais', verificarToken, async (req, res) => {
-  const { titulo, texto_base, area, competencia, rubrica_ia } = req.body;
+  const { titulo, texto_base, area, competencia, rubrica_ia, segmento } = req.body; // <-- Adicionado segmento
   try {
-    const { data, error } = await supabase.from('murais').insert({ titulo, texto_base, area, competencia: competencia || null, rubrica_ia: rubrica_ia || null }).select().single();
+    const { data, error } = await supabase.from('murais').insert({ 
+      titulo, 
+      texto_base, 
+      area, 
+      competencia: competencia || null, 
+      rubrica_ia: rubrica_ia || null,
+      segmento: segmento || null // <-- Adicionado segmento
+    }).select().single();
     if (error) throw error;
     return res.status(201).json({ mural: data });
   } catch (err) { return res.status(500).json({ erro: 'Erro' }); }
 });
+
 
 // =====================================================================
 // ROTAS DE OFICINAS PRESENCIAIS (PLANO DE AULA)
