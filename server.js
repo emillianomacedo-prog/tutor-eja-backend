@@ -627,14 +627,18 @@ app.post('/api/chat', async (req, res) => {
     const descricaoHabilidade = habCatalogo.descricao;
     const areaHabilidade = habCatalogo.area;
 
-    let queryUpdate = supabase.from('habilidades_a_desenvolver').update({ status: 'concluida' }).eq('matricula_id', matricula_id).eq('habilidade_codigo', habilidadeFoco);
+    // Dá a baixa imediata em todas as variações da habilidade (ex: C1H1, C1H1_1, C1H1_2)
+    let queryUpdate = supabase.from('habilidades_a_desenvolver')
+        .update({ status: 'concluida' })
+        .eq('matricula_id', matricula_id)
+        .like('habilidade_codigo', `${habilidadeFoco}%`); // O '%' pega o código exato e os sufixos
+        
     if (areaFoco) queryUpdate = queryUpdate.eq('area', areaFoco);
     await queryUpdate;
 
     // 3. Controle de Progresso (Chunks)
     const enviosIA = historico.filter(h => h.remetente === 'ia' && h.texto.includes('📖 **Leitura')).length;
     
-    // Se o aluno já pediu um livro novo (tem C1HX na mensagem) e tem histórico, ele está recomeçando
     if (mensagemAluno.match(/(C\d+H\d+)/i)) {
         offsetAtual = 0;
     } else {
@@ -661,7 +665,7 @@ app.post('/api/chat', async (req, res) => {
         return res.json({ resposta: msgFim });
     }
 
-     const textoChunkBruto = chunk[0].conteudo;
+    const textoChunkBruto = chunk[0].conteudo;
     
     // LIMPEZA E FORMATAÇÃO DO TEXTO
     let textoFormatado = textoChunkBruto;
