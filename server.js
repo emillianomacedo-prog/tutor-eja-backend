@@ -932,6 +932,67 @@ app.post('/api/murais', verificarToken, async (req, res) => {
 // ROTAS DE OFICINAS PRESENCIAIS (PLANO DE AULA)
 // =====================================================================
 
+// Criar um novo evento no cronograma (Apenas Coordenador)
+app.post('/api/admin/cronograma', verificarToken, async (req, res) => {
+  const { area, etapa_fundamental, etapa_medio, data, horario_inicio, horario_fim, professor, tema, local, sala } = req.body;
+  try {
+    const { data: evento, error } = await supabase.from('cronograma_oficinas').insert({
+      area, etapa_fundamental, etapa_medio, data, horario_inicio, horario_fim, professor, tema, local, sala
+    }).select().single();
+    
+    if (error) throw error;
+    return res.status(201).json({ evento });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ erro: 'Erro ao criar evento no cronograma.' });
+  }
+});
+
+// Listar o cronograma completo (Apenas Admin)
+app.get('/api/admin/cronograma', verificarToken, async (req, res) => {
+  try {
+    const { data, error } = await supabase.from('cronograma_oficinas')
+      .select('*')
+      .order('data', { ascending: true })
+      .order('horario_inicio', { ascending: true });
+      
+    if (error) throw error;
+    return res.json(data);
+  } catch (err) {
+    return res.status(500).json({ erro: 'Erro ao listar cronograma.' });
+  }
+});
+
+// Listar cronograma para o ALUNO (Filtra por etapa e por data futura/hoje)
+app.get('/api/aluno/:matricula_id/cronograma', async (req, res) => {
+  const { matricula_id } = req.params;
+  try {
+    const { data: matricula } = await supabase.from('matriculas_estudos').select('segmento').eq('id', matricula_id).single();
+    if (!matricula) return res.status(404).json({ erro: 'Aluno não encontrado' });
+    
+    const segmentoAluno = matricula.segmento; // 'fundamental' ou 'medio'
+    const hoje = new Date().toISOString().split('T')[0]; // Data de hoje (YYYY-MM-DD)
+
+    let query = supabase.from('cronograma_oficinas')
+      .select('*')
+      .gte('data', hoje) // Só mostra de hoje em diante
+      .order('data', { ascending: true })
+      .order('horario_inicio', { ascending: true });
+
+    if (segmentoAluno === 'fundamental') {
+      query = query.eq('etapa_fundamental', true);
+    } else {
+      query = query.eq('etapa_medio', true);
+    }
+
+    const { data, error } = await query;
+    if (error) throw error;
+    return res.json(data);
+  } catch (err) {
+    return res.status(500).json({ erro: 'Erro ao listar cronograma do aluno.' });
+  }
+});
+
 app.get('/api/admin/oficinas', verificarToken, async (req, res) => {
   try {
     const token = req.headers.authorization?.split(' ')[1];
