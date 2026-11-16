@@ -947,6 +947,34 @@ app.post('/api/admin/cronograma', verificarToken, async (req, res) => {
     return res.status(500).json({ erro: 'Erro ao criar evento no cronograma.' });
   }
 });
+// Editar um evento do cronograma
+app.put('/api/admin/cronograma/:id', verificarToken, async (req, res) => {
+  const { id } = req.params;
+  const { area, etapa_fundamental, etapa_medio, data, horario_inicio, horario_fim, professor, tema, local, sala } = req.body;
+  try {
+    const { data: evento, error } = await supabase.from('cronograma_oficinas').update({
+      area, etapa_fundamental, etapa_medio, data, horario_inicio, horario_fim, professor, tema, local, sala
+    }).eq('id', id).select().single();
+    
+    if (error) throw error;
+    return res.json({ evento });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ erro: 'Erro ao atualizar evento no cronograma.' });
+  }
+});
+
+// Excluir um evento do cronograma
+app.delete('/api/admin/cronograma/:id', verificarToken, async (req, res) => {
+  const { id } = req.params;
+  try {
+    const { error } = await supabase.from('cronograma_oficinas').delete().eq('id', id);
+    if (error) throw error;
+    return res.json({ mensagem: 'Evento excluído com sucesso.' });
+  } catch (err) {
+    return res.status(500).json({ erro: 'Erro ao excluir evento.' });
+  }
+});
 
 // Listar o cronograma completo (Apenas Admin)
 app.get('/api/admin/cronograma', verificarToken, async (req, res) => {
