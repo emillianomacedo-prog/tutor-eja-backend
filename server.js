@@ -1468,23 +1468,23 @@ app.get('/api/admin/rds', verificarToken, async (req, res) => {
 // ROTAS DE FORMULÁRIOS RDS
 // =====================================================================
 
+// Rota para cadastrar Formulário RDS no Backend
 app.post('/api/admin/rds', verificarToken, async (req, res) => {
   const { etapa, nome, turma, areas, observacao } = req.body;
-  
+
+  // Validação simples dos campos obrigatórios enviados pelo formulário
   if (!etapa || !nome || !turma) {
-    return res.status(400).json({ erro: 'Campos obrigatórios preenchidos incorretamente.' });
+    return res.status(400).json({ erro: 'Preencha todos os campos obrigatórios (etapa, nome, turma).' });
   }
 
   try {
-    const token = req.headers.authorization?.split(' ')[1];
-    // Se o ID do coordenador vier do token JWT gerado por req.usuario.id (conforme seu middleware verificarToken):
     const coordenadorId = req.usuario ? req.usuario.id : null;
 
     const { data, error } = await supabase.from('formularios_rds').insert({
       etapa,
       nome_aluno: nome.toUpperCase(),
       turma: turma.toUpperCase(),
-      areas: Array.isArray(areas) ? areas : [areas],
+      areas: Array.isArray(areas) ? areas : [],
       observacao: observacao || null,
       coordenador_id: coordenadorId
     }).select().single();
