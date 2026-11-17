@@ -1477,8 +1477,9 @@ app.post('/api/admin/rds', verificarToken, async (req, res) => {
   }
 
   try {
-    // Usa o ID do usuário de forma segura como texto/string para evitar erro de UUID
     const coordenadorId = req.usuario ? String(req.usuario.id) : null;
+
+    console.log("Tentando inserir no Supabase:", { etapa, nome_aluno: nome, turma, areas });
 
     const { data, error } = await supabase.from('formularios_rds').insert({
       etapa,
@@ -1487,20 +1488,20 @@ app.post('/api/admin/rds', verificarToken, async (req, res) => {
       areas: Array.isArray(areas) ? areas : [],
       observacao: observacao || null,
       coordenador_id: coordenadorId
-    }).select().single();
+    }).select();
 
     if (error) {
-      console.error('Erro detalhado Supabase:', error);
-      throw new Error(error.message);
+      console.error('❌ ERRO DO SUPABASE AO INSERIR:', error);
+      return res.status(500).json({ erro: 'Erro ao gravar no banco', detalhe: error.message });
     }
 
-    return res.status(201).json({ mensagem: 'RDS cadastrado com sucesso!', rds: data });
+    console.log("✅ Salvo com sucesso no Supabase:", data);
+    return res.status(201).json({ mensagem: 'RDS cadastrado com sucesso!', rds: data[0] });
   } catch (err) {
-    console.error('🚨 Erro ao salvar RDS:', err.message);
-    return res.status(500).json({ erro: 'Erro interno ao salvar RDS', detalhe: err.message });
+    console.error('🚨 Erro interno catch:', err.message);
+    return res.status(500).json({ erro: 'Erro interno', detalhe: err.message });
   }
 });
-
 app.get('/api/admin/rds', verificarToken, async (req, res) => {
   try {
     const { data, error } = await supabase
