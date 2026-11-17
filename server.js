@@ -6,6 +6,7 @@ const { createClient } = require('@supabase/supabase-js');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const Groq = require('groq-sdk');
 const nodemailer = require('nodemailer');
+const jwt = require('jsonwebtoken');
 
 const app = express();
 app.use(cors());
@@ -191,27 +192,80 @@ app.post('/api/login', async (req, res) => {
 
 app.post('/api/admin/login', async (req, res) => {
   const { email, password } = req.body;
+
   try {
-    const { data: coord, error } = await supabase.from('coordenadores').select('id, nome, email, senha, papel, area').eq('email', email).maybeSingle();
-    if (error || !coord) return res.status(401).json({ erro: "E-mail não cadastrado." });
-    let senhaValida = false;
-    if (coord.senha && coord.senha.startsWith('$2a$')) {
-      senhaValida = await bcrypt.compare(password, coord.senha);
-    } 
-    if (!senhaValida) {
-      if (coord.senha === password) senhaValida = true;
-      if (password === 'Sesi2026@') senhaValida = true;
+    const { data: coord, error } = await supabase
+      .from('coordenadores')
+      .select('id, nome, email, senha, papel, area')
+      .eq('email', email)
+      .maybeSingle();
+
+    if (error || !coord) {
+      return res.status(401).json({ erro: 'E-mail não cadastrado.' });
     }
-    if (!senhaValida) return res.status(401).json({ erro: "Senha incorreta." });
-    const fakeToken = `prof_${coord.id}_${Date.now()}`;
-    return res.json({ mensagem: "Login realizado", token: fakeToken, nome: coord.nome, papel: coord.papel, area: coord.area, coord_id: coord.id });
-  } catch (error) { return res.status(500).json({ erro: "Erro interno." }); }
+
+    const senhaValida = coord.senha
+      ? await bcrypt.compare(password, coord.senha)
+      : false;
+
+    if (!senhaValida) {
+      return res.status(401).json({ erro: 'Senha incorreta.' });
+    }
+
+    const token = jwt.sign(
+      { sub: coord.id },
+      process.env.JWT_SECRET,
+      { expiresIn: '8h' }
+    );
+
+    return res.json({
+      mensagem: 'Login realizado',
+      token,
+      nome: coord.nome,
+      papel: coord.papel,
+      area: coord.area,
+      coord_id: coord.id
+    });
+
+  } catch (error) {
+    console.error('[admin/login]', error);
+    return res.status(500).json({ erro: 'Erro interno.' });
+  }
 });
 
-function verificarToken(req, res, next) {
+async function verificarToken(req, res, next) {
   const token = req.headers.authorization?.split(' ')[1];
-  if (!token) return res.status(401).json({ erro: "Acesso negado. Faça login." });
-  next();
+
+  if (!token) {
+    return res.status(401).json({
+      erro: 'Acesso negado. Faça login.'
+    });
+  }
+
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+
+    const { data: usuario, error } = await supabase
+      .from('coordenadores')
+      .select('id, nome, email, papel, area')
+      .eq('id', decoded.sub)
+      .maybeSingle();
+
+    if (error || !usuario) {
+      return res.status(401).json({
+        erro: 'Usuário não encontrado ou acesso inválido.'
+      });
+    }
+
+    req.usuario = usuario;
+
+    next();
+
+  } catch (error) {
+    return res.status(401).json({
+      erro: 'Token inválido ou expirado. Faça login novamente.'
+    });
+  }
 }
 
 // =====================================================================
