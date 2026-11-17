@@ -1509,11 +1509,15 @@ app.get('/api/admin/rds', verificarToken, async (req, res) => {
       .select('*')
       .order('created_at', { ascending: false });
 
-    if (error) throw error;
+    if (error) {
+      console.error('Erro ao buscar formulários RDS:', error);
+      throw error;
+    }
+
     return res.json(data);
   } catch (err) {
-    console.error('Erro ao buscar RDS:', err);
-    return res.status(500).json({ erro: 'Erro ao listar RDS' });
+    console.error('🚨 Erro na rota GET /api/admin/rds:', err.message);
+    return res.status(500).json({ erro: 'Erro ao listar RDS', detalhe: err.message });
   }
 });
 
