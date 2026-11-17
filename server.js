@@ -1394,9 +1394,17 @@ app.get('/api/admin/rds', verificarToken, async (req, res) => {
 app.post('/api/admin/rds', verificarToken, async (req, res) => {
   const { etapa_ensino, nome_aluno, turma, aguardando_analise } = req.body;
 
-  if (!etapa_ensino || !nome_aluno || !turma || !aguardando_analise) {
-    return res.status(400).json({ erro: 'Todos os campos são obrigatórios' });
-  }
+if (
+    !etapa_ensino ||
+    !nome_aluno ||
+    !turma ||
+    !Array.isArray(aguardando_analise) ||
+    aguardando_analise.length === 0
+) {
+    return res.status(400).json({
+        erro: 'Preencha todos os campos e selecione pelo menos uma área.'
+    });
+}
 
   try {
     const token = req.headers.authorization?.split(' ')[1];
@@ -1421,7 +1429,25 @@ app.post('/api/admin/rds', verificarToken, async (req, res) => {
 // Editar RDS (Apenas Coordenador)
 app.put('/api/admin/rds/:id', verificarToken, async (req, res) => {
   const { id } = req.params;
-  const { etapa_ensino, nome_aluno, turma, aguardando_analise, observacao } = req.body;
+  const {
+    etapa_ensino,
+    nome_aluno,
+    turma,
+    aguardando_analise,
+    observacao
+} = req.body;
+
+if (
+    !etapa_ensino ||
+    !nome_aluno ||
+    !turma ||
+    !Array.isArray(aguardando_analise) ||
+    aguardando_analise.length === 0
+) {
+    return res.status(400).json({
+        erro: 'Selecione pelo menos uma área do conhecimento.'
+    });
+}
 
   try {
     const { data, error } = await supabase.from('rds_solicitacoes').update({
