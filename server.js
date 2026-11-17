@@ -1511,6 +1511,7 @@ app.get('/api/admin/rds', verificarToken, async (req, res) => {
     if (error) throw error;
     return res.json(data);
   } catch (err) {
+    console.error('Erro ao buscar RDS:', err);
     return res.status(500).json({ erro: 'Erro ao listar RDS' });
   }
 });
