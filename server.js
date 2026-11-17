@@ -1237,14 +1237,30 @@ app.get('/api/consultar-atividades/:aluno_id', verificarToken, async (req, res) 
 
     const { data, error } = await supabase.from('respostas_atividades')
       .select(`
-        id, status, nota, created_at, submetido_em,
+        id, status, nota, tentativas, created_at, submetido_em,
         atividades ( enunciado, tipo, competencia, area, habilidade_codigo )
       `)
       .eq('aluno_id', alunoIdReal)
       .order('created_at', { ascending: false });
       
     if (error) throw error;
-    return res.json(data);
+
+    // Aplica a regra de negócio para corrigir o status visual
+    const dadosTratados = (data || []).map(item => {
+      let statusFinal = item.status;
+      
+      // Se for objetiva, tentou 2 vezes e a nota é 0, o status real é FINALIZADA
+      if (item.atividades?.tipo === 'objetiva' && item.tentativas >= 2 && Number(item.nota) === 0) {
+        statusFinal = 'FINALIZADA';
+      }
+
+      return {
+        ...item,
+        status: statusFinal
+      };
+    });
+
+    return res.json(dadosTratados);
   } catch (err) { 
     console.error(err);
     return res.status(500).json({ erro: 'Erro ao buscar atividades' }); 
