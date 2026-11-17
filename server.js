@@ -631,7 +631,7 @@ app.post('/api/chat', async (req, res) => {
     let queryUpdate = supabase.from('habilidades_a_desenvolver')
         .update({ status: 'concluida' })
         .eq('matricula_id', matricula_id)
-        .like('habilidade_codigo', `${habilidadeFoco}%`);
+        .like('habilidade_codigo', `${habilidadeFoco}%`); // O '%' pega o código exato e os sufixos
         
     if (areaFoco) queryUpdate = queryUpdate.eq('area', areaFoco);
     await queryUpdate;
@@ -687,34 +687,6 @@ Regras:
 
     // Monta a resposta com os botões
     const respostaIA = `${textoFinal}\n\n---\n👉 O que deseja fazer?\n\n[Avançar para a próxima página](?msg=Prosseguir)\n\n[Concluir leitura e voltar ao menu](?msg=Sair)`;
-
-    await supabase.from('mensagens_chat').insert([
-      { texto: mensagemAluno, remetente: 'aluno', matricula_id },
-      { texto: respostaIA, remetente: 'ia', matricula_id, chunks_referenciados: [chunk[0].id] }
-    ]);
-
-    return res.json({ resposta: respostaIA });
-
-  } catch (error) { 
-    console.error(error);
-    return res.status(500).json({ erro: "Erro" }); 
-  }
-});
-    
-    // LIMPEZA E FORMATAÇÃO DO TEXTO
-    let textoFormatado = textoChunkBruto;
-    
-    // 1. Remove espaços duplicados
-    textoFormatado = textoFormatado.replace(/[ \t]+/g, ' ');
-    
-    // 2. Corrige palavras quebradas no final da linha com hífen (ex: "produ- \n ção")
-    textoFormatado = textoFormatado.replace(/-\s+/g, '');
-    
-    // 3. Tenta criar parágrafos onde há pontos finais seguidos de espaços e letras maiúsculas
-    textoFormatado = textoFormatado.replace(/([.!?])\s+([A-ZÀ-Ú])/g, '$1\n\n$2');
-
-    // Monta a resposta com os botões
-    const respostaIA = `📖 **Leitura da Habilidade ${habilidadeFoco}**\n\n${textoFormatado}\n\n---\n👉 O que deseja fazer?\n\n[Avançar para a próxima página](?msg=Prosseguir)\n\n[Concluir leitura e voltar ao menu](?msg=Sair)`;
 
     await supabase.from('mensagens_chat').insert([
       { texto: mensagemAluno, remetente: 'aluno', matricula_id },
@@ -954,27 +926,54 @@ app.post('/api/murais/:id/avaliar', async (req, res) => {
 });
 
 app.post('/api/murais', verificarToken, async (req, res) => {
-  const { titulo, texto_base, area, competencia, rubrica_ia, segmento } = req.body; // <-- Adicionado segmento
+  const { titulo, texto_base, area, competencia, rubrica_ia, segmento } = req.body;
   try {
     const { data, error } = await supabase.from('murais').insert({ 
-      titulo, 
-      texto_base, 
-      area, 
-      competencia: competencia || null, 
-      rubrica_ia: rubrica_ia || null,
-      segmento: segmento || null // <-- Adicionado segmento
+      titulo, texto_base, area, competencia: competencia || null, rubrica_ia: rubrica_ia || null, segmento: segmento || null 
     }).select().single();
     if (error) throw error;
     return res.status(201).json({ mural: data });
   } catch (err) { return res.status(500).json({ erro: 'Erro' }); }
 });
 
+// ROTA NOVA: LISTAR MURAIS NO PAINEL ADMIN
+app.get('/api/admin/murais', verificarToken, async (req, res) => {
+  try {
+    const token = req.headers.authorization?.split(' ')[1];
+    const coordId = token.split('_')[1];
+
+    const { data: coord } = await supabase.from('coordenadores').select('papel, area').eq('id', coordId).single();
+
+    let query = supabase.from('murais').select('*').order('created_at', { ascending: false });
+
+    if (coord && coord.papel === 'professor' && coord.area) {
+      query = query.eq('area', coord.area);
+    }
+
+    const { data, error } = await query;
+    if (error) throw error;
+    return res.json(data || []);
+  } catch (err) {
+    console.error('[admin/murais GET]', err);
+    return res.status(500).json({ erro: 'Erro ao listar murais' });
+  }
+});
+
+// ROTA NOVA: EXCLUIR MURAL
+app.delete('/api/admin/murais/:id', verificarToken, async (req, res) => {
+  try {
+    const { error } = await supabase.from('murais').delete().eq('id', req.params.id);
+    if (error) throw error;
+    return res.json({ mensagem: 'Mural excluído' });
+  } catch (err) {
+    return res.status(500).json({ erro: 'Erro ao excluir mural' });
+  }
+});
 
 // =====================================================================
 // ROTAS DE OFICINAS PRESENCIAIS (PLANO DE AULA)
 // =====================================================================
 
-// Criar um novo evento no cronograma (Apenas Coordenador)
 app.post('/api/admin/cronograma', verificarToken, async (req, res) => {
   const { area, etapa_fundamental, etapa_medio, data, horario_inicio, horario_fim, professor, tema, local, sala } = req.body;
   try {
@@ -989,7 +988,7 @@ app.post('/api/admin/cronograma', verificarToken, async (req, res) => {
     return res.status(500).json({ erro: 'Erro ao criar evento no cronograma.' });
   }
 });
-// Editar um evento do cronograma
+
 app.put('/api/admin/cronograma/:id', verificarToken, async (req, res) => {
   const { id } = req.params;
   const { area, etapa_fundamental, etapa_medio, data, horario_inicio, horario_fim, professor, tema, local, sala } = req.body;
@@ -1006,7 +1005,6 @@ app.put('/api/admin/cronograma/:id', verificarToken, async (req, res) => {
   }
 });
 
-// Excluir um evento do cronograma
 app.delete('/api/admin/cronograma/:id', verificarToken, async (req, res) => {
   const { id } = req.params;
   try {
@@ -1018,7 +1016,6 @@ app.delete('/api/admin/cronograma/:id', verificarToken, async (req, res) => {
   }
 });
 
-// Listar o cronograma completo (Apenas Admin)
 app.get('/api/admin/cronograma', verificarToken, async (req, res) => {
   try {
     const { data, error } = await supabase.from('cronograma_oficinas')
@@ -1033,19 +1030,18 @@ app.get('/api/admin/cronograma', verificarToken, async (req, res) => {
   }
 });
 
-// Listar cronograma para o ALUNO (Filtra por etapa e por data futura/hoje)
 app.get('/api/aluno/:matricula_id/cronograma', async (req, res) => {
   const { matricula_id } = req.params;
   try {
     const { data: matricula } = await supabase.from('matriculas_estudos').select('segmento').eq('id', matricula_id).single();
     if (!matricula) return res.status(404).json({ erro: 'Aluno não encontrado' });
     
-    const segmentoAluno = matricula.segmento; // 'fundamental' ou 'medio'
-    const hoje = new Date().toISOString().split('T')[0]; // Data de hoje (YYYY-MM-DD)
+    const segmentoAluno = matricula.segmento;
+    const hoje = new Date().toISOString().split('T')[0];
 
     let query = supabase.from('cronograma_oficinas')
       .select('*')
-      .gte('data', hoje) // Só mostra de hoje em diante
+      .gte('data', hoje)
       .order('data', { ascending: true })
       .order('horario_inicio', { ascending: true });
 
@@ -1241,8 +1237,8 @@ app.get('/api/consultar-atividades/:aluno_id', verificarToken, async (req, res) 
 
     const { data, error } = await supabase.from('respostas_atividades')
       .select(`
-        id, status, nota, created_at, 
-        atividades ( enunciado, tipo, competencia, area )
+        id, status, nota, created_at, submetido_em,
+        atividades ( enunciado, tipo, competencia, area, habilidade_codigo )
       `)
       .eq('aluno_id', alunoIdReal)
       .order('created_at', { ascending: false });
@@ -1340,40 +1336,6 @@ app.get('/api/relatorio-dados/:matricula_id', verificarToken, async (req, res) =
 });
 
 app.get('/health', (req, res) => res.json({ status: 'healthy', uptime: process.uptime() }));
-// Listar todos os murais para o painel administrativo
-app.get('/api/admin/murais', verificarToken, async (req, res) => {
-  try {
-    const token = req.headers.authorization?.split(' ')[1];
-    const coordId = token.split('_')[1];
-
-    const { data: coord } = await supabase.from('coordenadores').select('papel, area').eq('id', coordId).single();
-
-    let query = supabase.from('murais').select('*').order('created_at', { ascending: false });
-
-    // Se for professor, filtra pela área dele
-    if (coord && coord.papel === 'professor' && coord.area) {
-      query = query.eq('area', coord.area);
-    }
-
-    const { data, error } = await query;
-    if (error) throw error;
-    return res.json(data);
-  } catch (err) {
-    console.error(err);
-    return res.status(500).json({ erro: 'Erro ao listar murais' });
-  }
-});
-
-// Excluir um mural
-app.delete('/api/admin/murais/:id', verificarToken, async (req, res) => {
-  try {
-    const { error } = await supabase.from('murais').delete().eq('id', req.params.id);
-    if (error) throw error;
-    return res.json({ mensagem: 'Mural excluído' });
-  } catch (err) {
-    return res.status(500).json({ erro: 'Erro ao excluir mural' });
-  }
-});
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`🚀 Backend Rodando na porta ${PORT}`));
