@@ -1578,19 +1578,11 @@ app.patch('/api/admin/rds/:id/baixa', verificarToken, async (req, res) => {
 
 // Excluir RDS (Apenas Coordenador)
 app.delete('/api/admin/rds/:id', verificarToken, async (req, res) => {
-  const { id } = req.params;
-
   try {
-    const { error } = await supabase
-      .from('formularios_rds')
-      .delete()
-      .eq('id', id);
-
+    const { error } = await supabase.from('rds_solicitacoes').delete().eq('id', req.params.id);
     if (error) throw error;
-
-    return res.status(200).json({ mensagem: 'Registro excluído com sucesso!' });
+    return res.json({ mensagem: 'RDS excluído com sucesso' });
   } catch (err) {
-    console.error('Erro ao excluir RDS:', err);
     return res.status(500).json({ erro: 'Erro ao excluir RDS' });
   }
 });
