@@ -1434,32 +1434,23 @@ app.get('/health', (req, res) => res.json({ status: 'healthy', uptime: process.u
 // Listar RDS (Coordenação vê tudo; Professor vê os da sua área)
 app.get('/api/admin/rds', verificarToken, async (req, res) => {
   try {
-    const token = req.headers.authorization?.split(' ')[1];
-    const coordId = token.split('_')[1];
+    console.log("🔍 Rota GET /api/admin/rds acionada...");
 
-    const { data: coord } = await supabase.from('coordenadores').select('papel, area').eq('id', coordId).single();
+    const { data, error, status } = await supabase
+      .from('formularios_rds')
+      .select('*')
+      .order('created_at', { ascending: false });
 
-    let query = supabase.from('rds_solicitacoes')
-      .select(`
-        *,
-        criador:criado_por (nome),
-        analisador:analisado_por (nome)
-      `)
-      .order('etapa_ensino', { ascending: true })
-      .order('turma', { ascending: true })
-      .order('nome_aluno', { ascending: true });
+    if (error) {
+      console.error('❌ Erro do Supabase na listagem:', error);
+      return res.status(500).json({ erro: error.message });
+    }
 
-    // Se for professor, filtra pela área dele (mas só as pendentes ou já analisadas por ele)
-    if (coord && coord.papel === 'professor' && coord.area) {
-    query = query.contains('aguardando_analise', [coord.area]);    }
-
-    const { data, error } = await query;
-    if (error) throw error;
-
-    return res.json(data || []);
+    console.log(`📦 Registros encontrados no Supabase: ${data ? data.length : 0}`);
+    return res.status(200).json(data || []);
   } catch (err) {
-    console.error('[admin/rds GET]', err);
-    return res.status(500).json({ erro: 'Erro ao listar RDS' });
+    console.error('🚨 Erro crítico na rota GET RDS:', err.message);
+    return res.status(500).json({ erro: 'Erro interno ao buscar RDS', detalhe: err.message });
   }
 });
 
