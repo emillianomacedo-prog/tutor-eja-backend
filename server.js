@@ -1464,38 +1464,50 @@ app.get('/api/admin/rds', verificarToken, async (req, res) => {
 });
 
 // Criar novo RDS (Apenas Coordenador)
-app.post('/api/admin/rds', verificarToken, async (req, res) => {
-  const { etapa_ensino, nome_aluno, turma, aguardando_analise } = req.body;
+// =====================================================================
+// ROTAS DE FORMULÁRIOS RDS
+// =====================================================================
 
-if (
-    !etapa_ensino ||
-    !nome_aluno ||
-    !turma ||
-    !Array.isArray(aguardando_analise) ||
-    aguardando_analise.length === 0
-) {
-    return res.status(400).json({
-        erro: 'Preencha todos os campos e selecione pelo menos uma área.'
-    });
-}
+app.post('/api/admin/rds', verificarToken, async (req, res) => {
+  const { etapa, nome, turma, areas, observacao } = req.body;
+  
+  if (!etapa || !nome || !turma) {
+    return res.status(400).json({ erro: 'Campos obrigatórios preenchidos incorretamente.' });
+  }
 
   try {
     const token = req.headers.authorization?.split(' ')[1];
-    const coordId = token.split('_')[1];
+    // Se o ID do coordenador vier do token JWT gerado por req.usuario.id (conforme seu middleware verificarToken):
+    const coordenadorId = req.usuario ? req.usuario.id : null;
 
-    const { data, error } = await supabase.from('rds_solicitacoes').insert({
-      etapa_ensino,
-      nome_aluno: nome_aluno.trim().toUpperCase(),
-      turma: turma.trim().toUpperCase(),
-      aguardando_analise,
-      criado_por: coordId,
+    const { data, error } = await supabase.from('formularios_rds').insert({
+      etapa,
+      nome_aluno: nome.toUpperCase(),
+      turma: turma.toUpperCase(),
+      areas: Array.isArray(areas) ? areas : [areas],
+      observacao: observacao || null,
+      coordenador_id: coordenadorId
     }).select().single();
 
     if (error) throw error;
-    return res.status(201).json({ rds: data });
+    return res.status(201).json({ mensagem: 'RDS cadastrado com sucesso!', rds: data });
   } catch (err) {
-    console.error('[admin/rds POST]', err);
-    return res.status(500).json({ erro: 'Erro ao criar RDS' });
+    console.error('🚨 Erro ao salvar RDS:', err.message);
+    return res.status(500).json({ erro: 'Erro interno ao salvar RDS', detalhe: err.message });
+  }
+});
+
+app.get('/api/admin/rds', verificarToken, async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('formularios_rds')
+      .select('*')
+      .order('created_at', { ascending: false });
+
+    if (error) throw error;
+    return res.json(data);
+  } catch (err) {
+    return res.status(500).json({ erro: 'Erro ao listar RDS' });
   }
 });
 
