@@ -1472,13 +1472,13 @@ app.get('/api/admin/rds', verificarToken, async (req, res) => {
 app.post('/api/admin/rds', verificarToken, async (req, res) => {
   const { etapa, nome, turma, areas, observacao } = req.body;
 
-  // Validação simples dos campos obrigatórios enviados pelo formulário
   if (!etapa || !nome || !turma) {
-    return res.status(400).json({ erro: 'Preencha todos os campos obrigatórios (etapa, nome, turma).' });
+    return res.status(400).json({ erro: 'Preencha os campos obrigatórios.' });
   }
 
   try {
-    const coordenadorId = req.usuario ? req.usuario.id : null;
+    // Usa o ID do usuário de forma segura como texto/string para evitar erro de UUID
+    const coordenadorId = req.usuario ? String(req.usuario.id) : null;
 
     const { data, error } = await supabase.from('formularios_rds').insert({
       etapa,
@@ -1489,7 +1489,11 @@ app.post('/api/admin/rds', verificarToken, async (req, res) => {
       coordenador_id: coordenadorId
     }).select().single();
 
-    if (error) throw error;
+    if (error) {
+      console.error('Erro detalhado Supabase:', error);
+      throw new Error(error.message);
+    }
+
     return res.status(201).json({ mensagem: 'RDS cadastrado com sucesso!', rds: data });
   } catch (err) {
     console.error('🚨 Erro ao salvar RDS:', err.message);
