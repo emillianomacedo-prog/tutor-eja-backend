@@ -627,11 +627,11 @@ app.post('/api/chat', async (req, res) => {
     const descricaoHabilidade = habCatalogo.descricao;
     const areaHabilidade = habCatalogo.area;
 
-    // Dá a baixa imediata em todas as variações da habilidade (ex: C1H1, C1H1_1, C1H1_2)
+    // Dá a baixa imediata em todas as variações da habilidade
     let queryUpdate = supabase.from('habilidades_a_desenvolver')
         .update({ status: 'concluida' })
         .eq('matricula_id', matricula_id)
-        .like('habilidade_codigo', `${habilidadeFoco}%`); // O '%' pega o código exato e os sufixos
+        .like('habilidade_codigo', `${habilidadeFoco}%`);
         
     if (areaFoco) queryUpdate = queryUpdate.eq('area', areaFoco);
     await queryUpdate;
@@ -666,6 +666,40 @@ app.post('/api/chat', async (req, res) => {
     }
 
     const textoChunkBruto = chunk[0].conteudo;
+    
+    // ========================================================
+    // NOVO: USO DA IA PARA FORMATAR E LIMPAR O TEXTO
+    // ========================================================
+    const promptSistema = `
+Você é um Tutor IA especialista em Educação de Jovens e Adultos (EJA).
+Sua missão é transformar o texto bruto de um livro didático em uma leitura amigável, leve e interativa para o aluno.
+Regras:
+1. Extraia APENAS o conteúdo teórico (a explicação). IGNORE COMPLETAMENTE exercícios, perguntas, "Atividades", "Para refletir", "Exercícios", números de páginas ou instruções de tarefas.
+2. Use formatação Markdown (negrito, tópicos, itálico) para deixar o texto fácil de ler.
+3. Adicione emojis amigáveis no início dos parágrafos ou tópicos para tornar a leitura agradável.
+4. Faça uma introdução curta e acolhedora de 1 linha antes de começar o conteúdo.
+5. O texto deve ser conversacional (como se você estivesse explicando para o aluno).
+`;
+    const textoFormatadoPelaIA = await gerarRespostaIA(promptSistema, [], `Aqui está o texto bruto do livro:\n\n${textoChunkBruto}`);
+    
+    // Fallback de segurança caso a IA falhe
+    const textoFinal = textoFormatadoPelaIA || textoChunkBruto;
+
+    // Monta a resposta com os botões
+    const respostaIA = `${textoFinal}\n\n---\n👉 O que deseja fazer?\n\n[Avançar para a próxima página](?msg=Prosseguir)\n\n[Concluir leitura e voltar ao menu](?msg=Sair)`;
+
+    await supabase.from('mensagens_chat').insert([
+      { texto: mensagemAluno, remetente: 'aluno', matricula_id },
+      { texto: respostaIA, remetente: 'ia', matricula_id, chunks_referenciados: [chunk[0].id] }
+    ]);
+
+    return res.json({ resposta: respostaIA });
+
+  } catch (error) { 
+    console.error(error);
+    return res.status(500).json({ erro: "Erro" }); 
+  }
+});
     
     // LIMPEZA E FORMATAÇÃO DO TEXTO
     let textoFormatado = textoChunkBruto;
