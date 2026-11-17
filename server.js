@@ -1377,8 +1377,7 @@ app.get('/api/admin/rds', verificarToken, async (req, res) => {
 
     // Se for professor, filtra pela área dele (mas só as pendentes ou já analisadas por ele)
     if (coord && coord.papel === 'professor' && coord.area) {
-      query = query.eq('aguardando_analise', coord.area);
-    }
+    query = query.contains('aguardando_analise', [coord.area]);    }
 
     const { data, error } = await query;
     if (error) throw error;
