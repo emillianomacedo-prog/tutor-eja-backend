@@ -204,13 +204,33 @@ app.post('/api/admin/login', async (req, res) => {
       return res.status(401).json({ erro: 'E-mail não cadastrado.' });
     }
 
-    const senhaValida = coord.senha
-      ? await bcrypt.compare(password, coord.senha)
-      : false;
+let senhaValida = false;
 
-    if (!senhaValida) {
-      return res.status(401).json({ erro: 'Senha incorreta.' });
+if (coord.senha) {
+  if (/^\$2[aby]\$/.test(coord.senha)) {
+    // Senha já criptografada com bcrypt
+    senhaValida = await bcrypt.compare(password, coord.senha);
+  } else if (coord.senha === password) {
+    // Senha antiga armazenada em texto puro
+    senhaValida = true;
+
+    // Atualiza automaticamente para bcrypt
+    const novaSenha = await bcrypt.hash(password, 10);
+
+    const { error: erroAtualizacao } = await supabase
+      .from('coordenadores')
+      .update({ senha: novaSenha })
+      .eq('id', coord.id);
+
+    if (erroAtualizacao) {
+      console.error('Erro ao atualizar senha:', erroAtualizacao);
     }
+  }
+}
+
+if (!senhaValida) {
+  return res.status(401).json({ erro: 'Senha incorreta.' });
+}
 
     const token = jwt.sign(
       { sub: coord.id },
