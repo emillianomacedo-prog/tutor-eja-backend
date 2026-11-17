@@ -1353,5 +1353,127 @@ app.get('/api/relatorio-dados/:matricula_id', verificarToken, async (req, res) =
 
 app.get('/health', (req, res) => res.json({ status: 'healthy', uptime: process.uptime() }));
 
+// =====================================================================
+// ROTAS: FORMULÁRIOS RDS (Registro de Desenvolvimento do Estudante)
+// =====================================================================
+
+// Listar RDS (Coordenação vê tudo; Professor vê os da sua área)
+app.get('/api/admin/rds', verificarToken, async (req, res) => {
+  try {
+    const token = req.headers.authorization?.split(' ')[1];
+    const coordId = token.split('_')[1];
+
+    const { data: coord } = await supabase.from('coordenadores').select('papel, area').eq('id', coordId).single();
+
+    let query = supabase.from('rds_solicitacoes')
+      .select(`
+        *,
+        criador:criado_por (nome),
+        analisador:analisado_por (nome)
+      `)
+      .order('etapa_ensino', { ascending: true })
+      .order('turma', { ascending: true })
+      .order('nome_aluno', { ascending: true });
+
+    // Se for professor, filtra pela área dele (mas só as pendentes ou já analisadas por ele)
+    if (coord && coord.papel === 'professor' && coord.area) {
+      query = query.eq('aguardando_analise', coord.area);
+    }
+
+    const { data, error } = await query;
+    if (error) throw error;
+
+    return res.json(data || []);
+  } catch (err) {
+    console.error('[admin/rds GET]', err);
+    return res.status(500).json({ erro: 'Erro ao listar RDS' });
+  }
+});
+
+// Criar novo RDS (Apenas Coordenador)
+app.post('/api/admin/rds', verificarToken, async (req, res) => {
+  const { etapa_ensino, nome_aluno, turma, aguardando_analise } = req.body;
+
+  if (!etapa_ensino || !nome_aluno || !turma || !aguardando_analise) {
+    return res.status(400).json({ erro: 'Todos os campos são obrigatórios' });
+  }
+
+  try {
+    const token = req.headers.authorization?.split(' ')[1];
+    const coordId = token.split('_')[1];
+
+    const { data, error } = await supabase.from('rds_solicitacoes').insert({
+      etapa_ensino,
+      nome_aluno: nome_aluno.trim().toUpperCase(),
+      turma: turma.trim().toUpperCase(),
+      aguardando_analise,
+      criado_por: coordId,
+    }).select().single();
+
+    if (error) throw error;
+    return res.status(201).json({ rds: data });
+  } catch (err) {
+    console.error('[admin/rds POST]', err);
+    return res.status(500).json({ erro: 'Erro ao criar RDS' });
+  }
+});
+
+// Editar RDS (Apenas Coordenador)
+app.put('/api/admin/rds/:id', verificarToken, async (req, res) => {
+  const { id } = req.params;
+  const { etapa_ensino, nome_aluno, turma, aguardando_analise, observacao } = req.body;
+
+  try {
+    const { data, error } = await supabase.from('rds_solicitacoes').update({
+      etapa_ensino,
+      nome_aluno: nome_aluno.trim().toUpperCase(),
+      turma: turma.trim().toUpperCase(),
+      aguardando_analise,
+      observacao: observacao || null,
+    }).eq('id', id).select().single();
+
+    if (error) throw error;
+    return res.json({ rds: data });
+  } catch (err) {
+    console.error('[admin/rds PUT]', err);
+    return res.status(500).json({ erro: 'Erro ao editar RDS' });
+  }
+});
+
+// Dar baixa em um RDS (Professor ou Coordenador)
+app.patch('/api/admin/rds/:id/baixa', verificarToken, async (req, res) => {
+  const { id } = req.params;
+  const { observacao } = req.body;
+
+  try {
+    const token = req.headers.authorization?.split(' ')[1];
+    const coordId = token.split('_')[1];
+
+    const { data, error } = await supabase.from('rds_solicitacoes').update({
+      status: 'concluido',
+      analisado_por: coordId,
+      analisado_em: new Date().toISOString(),
+      observacao: observacao || null,
+    }).eq('id', id).select().single();
+
+    if (error) throw error;
+    return res.json({ rds: data, mensagem: 'Baixa realizada com sucesso!' });
+  } catch (err) {
+    console.error('[admin/rds baixa]', err);
+    return res.status(500).json({ erro: 'Erro ao dar baixa' });
+  }
+});
+
+// Excluir RDS (Apenas Coordenador)
+app.delete('/api/admin/rds/:id', verificarToken, async (req, res) => {
+  try {
+    const { error } = await supabase.from('rds_solicitacoes').delete().eq('id', req.params.id);
+    if (error) throw error;
+    return res.json({ mensagem: 'RDS excluído com sucesso' });
+  } catch (err) {
+    return res.status(500).json({ erro: 'Erro ao excluir RDS' });
+  }
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`🚀 Backend Rodando na porta ${PORT}`));
