@@ -667,6 +667,49 @@ app.put('/api/admin/editar-aluno/:matricula_id', verificarToken, async (req, res
     return res.json({ mensagem: "Aluno atualizado!" });
   } catch (error) { return res.status(500).json({ erro: "Erro" }); }
 });
+app.delete('/api/admin/excluir-aluno/:matricula_id', verificarToken, async (req, res) => {
+  const { matricula_id } = req.params;
+  try {
+    // 1. Busca o aluno_id vinculado à matrícula
+    const { data: matricula, error: errMat } = await supabase
+      .from('matriculas_estudos')
+      .select('aluno_id')
+      .eq('id', matricula_id)
+      .maybeSingle();
+
+    if (errMat || !matricula) {
+      return res.status(404).json({ erro: 'Matrícula não encontrada.' });
+    }
+
+    const alunoId = matricula.aluno_id;
+
+    // 2. Remove registros vinculados à matrícula
+    await supabase.from('habilidades_dispensadas').delete().eq('matricula_id', matricula_id);
+    await supabase.from('habilidades_a_desenvolver').delete().eq('matricula_id', matricula_id);
+    await supabase.from('mensagens_chat').delete().eq('matricula_id', matricula_id);
+    await supabase.from('alertas_coordenacao').delete().eq('matricula_id', matricula_id);
+    await supabase.from('relatorios_oficiais').delete().eq('matricula_id', matricula_id);
+    await supabase.from('registros_qualitativos').delete().eq('matricula_id', matricula_id);
+
+    // 3. Remove registros vinculados ao aluno_id
+    if (alunoId) {
+      await supabase.from('respostas_atividades').delete().eq('aluno_id', alunoId);
+      await supabase.from('postagens_murais').delete().eq('aluno_id', alunoId);
+      await supabase.from('oficinas_presenciais').delete().eq('aluno_id', alunoId);
+    }
+
+    // 4. Remove a matrícula e o cadastro do aluno
+    await supabase.from('matriculas_estudos').delete().eq('id', matricula_id);
+    if (alunoId) {
+      await supabase.from('alunos').delete().eq('id', alunoId);
+    }
+
+    return res.json({ mensagem: 'Aluno excluído com sucesso!' });
+  } catch (error) {
+    console.error('Erro ao excluir aluno:', error);
+    return res.status(500).json({ erro: 'Erro ao excluir aluno: ' + error.message });
+  }
+});
 
 app.get('/api/admin/alunos', verificarToken, async (req, res) => {
   try {
