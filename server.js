@@ -683,7 +683,7 @@ app.get('/api/admin/alunos', verificarToken, async (req, res) => {
 });
 
 // =====================================================================
-// BUSCA ATIVA AUTOMÁTICA (5 DIAS SEM LEITURA, MURAL OU ATIVIDADE)
+// BUSCA ATIVA (COMBATE À EVASÃO - 5 DIAS SEM LEITURA, MURAL OU ATIVIDADE)
 // =====================================================================
 
 app.get('/api/admin/alertas', verificarToken, async (req, res) => {
@@ -691,162 +691,133 @@ app.get('/api/admin/alertas', verificarToken, async (req, res) => {
     const CINCO_DIAS_MS = 5 * 24 * 60 * 60 * 1000;
     const dataLimite = new Date(Date.now() - CINCO_DIAS_MS).toISOString();
 
-    // 1. Busca todas as matrículas ativas com dados do aluno
     const { data: matriculasAtivas } = await supabase
       .from('matriculas_estudos')
-      .select('id, aluno_id, ultimo_acesso, criado_em, alunos ( id, nome_completo, telefone_whatsapp, email )')
+      .select('id, aluno_id, criado_em, alunos ( id, nome_completo, telefone_whatsapp, email )')
       .eq('status', 'ativa');
 
-    // Mapa rápido por matricula_id para usar na montagem final sem depender de FK no Supabase
     const mapaMatriculas = new Map();
-    if (matriculasAtivas) {
-      for (const m of matriculasAtivas) {
-        mapaMatriculas.set(m.id, m);
-      }
+    for (const m of matriculasAtivas || []) {
+      mapaMatriculas.set(m.id, m);
     }
 
-    if (matriculasAtivas && matriculasAtivas.length > 0) {
-      for (const mat of matriculasAtivas) {
-        if (!mat.alunos) continue;
+    for (const mat of matriculasAtivas || []) {
+      if (!mat.alunos) continue;
 
-        // Verifica última LEITURA (mensagens_chat)
-        const { data: ultChat } = await supabase
-          .from('mensagens_chat')
-          .select('created_at')
+      const { data: ultChat } = await supabase
+        .from('mensagens_chat')
+        .select('created_at')
+        .eq('matricula_id', mat.id)
+        .eq('remetente', 'aluno')
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      const { data: ultAtiv } = await supabase
+        .from('respostas_atividades')
+        .select('created_at, submetido_em')
+        .eq('aluno_id', mat.aluno_id)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      const { data: ultMural } = await supabase
+        .from('postagens_murais')
+        .select('submetido_em, avaliado_em')
+        .eq('aluno_id', mat.aluno_id)
+        .order('submetido_em', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      const datasInteracao = [
+        ultChat?.created_at,
+        ultAtiv?.submetido_em || ultAtiv?.created_at,
+        ultMural?.submetido_em || ultMural?.avaliado_em,
+        mat.criado_em
+      ].filter(Boolean).map(d => new Date(d).getTime());
+
+      const ultimaInteracaoMs = datasInteracao.length > 0 ? Math.max(...datasInteracao) : 0;
+      const diasSemInteracao = Math.floor((Date.now() - ultimaInteracaoMs) / (24 * 60 * 60 * 1000));
+
+      if (diasSemInteracao >= 5) {
+        const { data: alertaRecente } = await supabase
+          .from('alertas_coordenacao')
+          .select('id')
           .eq('matricula_id', mat.id)
-          .eq('remetente', 'aluno')
-          .order('created_at', { ascending: false })
-          .limit(1)
+          .eq('tipo', 'inatividade')
+          .gte('criado_em', dataLimite)
           .maybeSingle();
 
-        // Verifica última ATIVIDADE (respostas_atividades)
-        const { data: ultAtiv } = await supabase
-          .from('respostas_atividades')
-          .select('created_at, submetido_em')
-          .eq('aluno_id', mat.aluno_id)
-          .order('created_at', { ascending: false })
-          .limit(1)
-          .maybeSingle();
+        if (!alertaRecente) {
+          const msgAlerta = `Aluno há ${diasSemInteracao} dias sem realizar leitura, atividade ou mural.`;
+          let emailDisparado = false;
 
-        // Verifica último MURAL (postagens_murais)
-        const { data: ultMural } = await supabase
-          .from('postagens_murais')
-          .select('submetido_em, avaliado_em')
-          .eq('aluno_id', mat.aluno_id)
-          .order('submetido_em', { ascending: false })
-          .limit(1)
-          .maybeSingle();
-
-        const datasInteracao = [
-          ultChat?.created_at,
-          ultAtiv?.submetido_em || ultAtiv?.created_at,
-          ultMural?.submetido_em || ultMural?.avaliado_em,
-          mat.criado_em
-        ].filter(Boolean).map(d => new Date(d).getTime());
-
-        const ultimaInteracaoMs = datasInteracao.length > 0 ? Math.max(...datasInteracao) : 0;
-        const diasSemInteracao = Math.floor((Date.now() - ultimaInteracaoMs) / (24 * 60 * 60 * 1000));
-
-        if (diasSemInteracao >= 5) {
-          const { data: alertaRecente } = await supabase
-            .from('alertas_coordenacao')
-            .select('id, status, criado_em')
-            .eq('matricula_id', mat.id)
-            .eq('tipo', 'inatividade')
-            .gte('criado_em', dataLimite)
-            .maybeSingle();
-
-          if (!alertaRecente) {
-            const msgAlerta = `Aluno há ${diasSemInteracao} dias sem realizar leitura, atividade ou mural.`;
-            let emailDisparado = false;
-
-            if (mat.alunos.email && process.env.GMAIL_USER && process.env.GMAIL_APP_PASSWORD) {
-              try {
-                await transporter.sendMail({
-                  from: `"Tutor Nova EJA - SESI" <${process.env.GMAIL_USER}>`,
-                  to: mat.alunos.email,
-                  subject: `👋 Sentimos sua falta na Nova EJA, ${mat.alunos.nome_completo.split(' ')[0]}!`,
-                  html: `
-                    <div style="font-family: Arial, sans-serif; color: #1e293b; max-width: 600px; margin: 0 auto; border: 1px solid #e2e8f0; border-radius: 10px; overflow: hidden;">
-                      <div style="background: #0057b8; color: white; padding: 20px; text-align: center;">
-                        <h2 style="margin: 0;">Tutor IA · Nova EJA SESI</h2>
-                      </div>
-                      <div style="padding: 24px; line-height: 1.6;">
-                        <p>Olá, <strong>${mat.alunos.nome_completo}</strong>! 👋</p>
-                        <p>Notamos que faz <strong>${diasSemInteracao} dias</strong> que você não realiza uma leitura de livro, atividade ou participação no mural na plataforma.</p>
-                        <p>Sabemos que a rotina é corrida, mas cada pequena etapa concluída deixa você mais perto da sua certificação!</p>
-                        <p style="text-align: center; margin: 30px 0;">
-                          <a href="https://tutor-nova-eja.vercel.app" style="background: #16a34a; color: white; padding: 12px 24px; text-decoration: none; border-radius: 8px; font-weight: bold;">Acessar Minha Plataforma</a>
-                        </p>
-                        <p style="font-size: 13px; color: #64748b;">Qualquer dificuldade, conte com a nossa equipe pedagógica!</p>
-                      </div>
+          if (mat.alunos.email && process.env.GMAIL_USER && process.env.GMAIL_APP_PASSWORD) {
+            try {
+              await transporter.sendMail({
+                from: `"Tutor Nova EJA - SESI" <${process.env.GMAIL_USER}>`,
+                to: mat.alunos.email,
+                subject: `👋 Sentimos sua falta na Nova EJA, ${mat.alunos.nome_completo.split(' ')[0]}!`,
+                html: `
+                  <div style="font-family: Arial, sans-serif; color: #1e293b; max-width: 600px; margin: 0 auto; border: 1px solid #e2e8f0; border-radius: 10px; overflow: hidden;">
+                    <div style="background: #0057b8; color: white; padding: 20px; text-align: center;">
+                      <h2 style="margin: 0;">Tutor IA · Nova EJA SESI</h2>
                     </div>
-                  `
-                });
-                emailDisparado = true;
-                console.log(`📧 E-mail de Busca Ativa enviado para ${mat.alunos.email}`);
-              } catch (errMail) {
-                console.error(`⚠️ Falha ao enviar e-mail para ${mat.alunos.email}:`, errMail.message);
-              }
+                    <div style="padding: 24px; line-height: 1.6;">
+                      <p>Olá, <strong>${mat.alunos.nome_completo}</strong>! 👋</p>
+                      <p>Notamos que faz <strong>${diasSemInteracao} dias</strong> que você não realiza uma leitura de livro, atividade ou participação no mural na plataforma.</p>
+                      <p>Sabemos que a rotina é corrida, mas cada pequena etapa concluída deixa você mais perto da sua certificação!</p>
+                      <p style="text-align: center; margin: 30px 0;">
+                        <a href="https://tutor-nova-eja.vercel.app" style="background: #16a34a; color: white; padding: 12px 24px; text-decoration: none; border-radius: 8px; font-weight: bold;">Acessar Minha Plataforma</a>
+                      </p>
+                      <p style="font-size: 13px; color: #64748b;">Qualquer dificuldade, conte com a nossa equipe pedagógica!</p>
+                    </div>
+                  </div>
+                `
+              });
+              emailDisparado = true;
+            } catch (errMail) {
+              console.error(`⚠️ Falha ao enviar e-mail para ${mat.alunos.email}:`, errMail.message);
             }
-
-            await supabase.from('alertas_coordenacao').insert({
-              matricula_id: mat.id,
-              tipo: 'inatividade',
-              mensagem_original: emailDisparado ? `${msgAlerta} (E-mail enviado ✅)` : msgAlerta,
-              status: 'pendente'
-            });
           }
+
+          await supabase.from('alertas_coordenacao').insert({
+            matricula_id: mat.id,
+            tipo: 'inatividade',
+            mensagem_original: emailDisparado ? `${msgAlerta} (E-mail enviado ✅)` : msgAlerta,
+            status: 'pendente'
+          });
         }
       }
     }
 
-    // 2. Busca todos os alertas pendentes SEM join automático (evita erro PGRST200)
+    // Filtra APENAS alertas de evasão ('inatividade')
     const { data: alertas, error } = await supabase
       .from('alertas_coordenacao')
-      .select('id, matricula_id, tipo, mensagem_original, status, criado_em')
+      .select('id, matricula_id, tipo, mensagem_original, criado_em')
       .eq('status', 'pendente')
+      .eq('tipo', 'inatividade')
       .order('criado_em', { ascending: false });
 
     if (error) throw error;
 
     const alertasCompletos = [];
-
     for (const alerta of alertas || []) {
       let matInfo = mapaMatriculas.get(alerta.matricula_id);
-
-      // Caso a matrícula não esteja no mapa (ex: concluída), busca individualmente
       if (!matInfo && alerta.matricula_id) {
         const { data: mExtra } = await supabase
           .from('matriculas_estudos')
-          .select('id, aluno_id, alunos ( nome_completo, telefone_whatsapp, email )')
+          .select('id, alunos ( nome_completo, telefone_whatsapp, email )')
           .eq('id', alerta.matricula_id)
           .maybeSingle();
         matInfo = mExtra;
       }
-
       if (!matInfo || !matInfo.alunos) continue;
 
-      const item = {
+      alertasCompletos.push({
         ...alerta,
-        matriculas_estudos: {
-          id: matInfo.id,
-          alunos: matInfo.alunos
-        }
-      };
-
-      if (alerta.tipo === 'correcao_pendente') {
-        const { data: resposta } = await supabase
-          .from('respostas_atividades')
-          .select('atividade_id, atividades(enunciado)')
-          .eq('aluno_id', matInfo.aluno_id)
-          .eq('status', 'AGUARDANDO_CORRECAO')
-          .limit(1)
-          .maybeSingle();
-        if (resposta && resposta.atividades) item.contexto_atividade = resposta.atividades.enunciado;
-      }
-
-      alertasCompletos.push(item);
+        matriculas_estudos: { id: matInfo.id, alunos: matInfo.alunos }
+      });
     }
 
     return res.json(alertasCompletos);
@@ -856,14 +827,14 @@ app.get('/api/admin/alertas', verificarToken, async (req, res) => {
   }
 });
 
-// Marcar alerta como resolvido (ou reenviar e-mail manualmente) sem depender de FK
+// Concluir (arquivar) ou reenviar e-mail de evasão
 app.post('/api/admin/alertas/:id/enviar', verificarToken, async (req, res) => {
   const { id } = req.params;
   const { apenas_resolver } = req.body || {};
   try {
     const { data: alerta, error: errAlerta } = await supabase
       .from('alertas_coordenacao')
-      .select('id, matricula_id, tipo, mensagem_original')
+      .select('id, matricula_id')
       .eq('id', id)
       .single();
 
@@ -878,20 +849,14 @@ app.post('/api/admin/alertas/:id/enviar', verificarToken, async (req, res) => {
 
       const aluno = mat?.alunos;
       if (aluno && aluno.email && process.env.GMAIL_USER) {
-        let assunto = '👋 Vamos retomar seus estudos na Nova EJA?';
-        let html = `<p>Olá, <strong>${aluno.nome_completo}</strong>! Acesse a plataforma Tutor Nova EJA para continuar suas leituras e atividades.</p>`;
-        if (alerta.tipo === 'apto_certificacao') {
-          assunto = '🏆 Parabéns! Você está apto à certificação!';
-          html = `<p>Olá, <strong>${aluno.nome_completo}</strong>! Você atingiu a nota mínima em todas as competências!</p>`;
-        }
         try {
           await transporter.sendMail({
             from: `"Tutor Nova EJA - SESI" <${process.env.GMAIL_USER}>`,
             to: aluno.email,
-            subject: assunto,
-            html
+            subject: `👋 Vamos retomar seus estudos na Nova EJA, ${aluno.nome_completo.split(' ')[0]}?`,
+            html: `<p>Olá, <strong>${aluno.nome_completo}</strong>! Sentimos sua falta na plataforma Tutor Nova EJA. Acesse para continuar suas leituras, atividades e murais!</p>`
           });
-        } catch (e) { console.error("Erro ao enviar e-mail:", e.message); }
+        } catch (e) { console.error("Erro ao reenviar e-mail:", e.message); }
       }
     }
 
