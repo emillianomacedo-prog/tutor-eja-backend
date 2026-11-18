@@ -697,6 +697,14 @@ app.get('/api/admin/alertas', verificarToken, async (req, res) => {
       .select('id, aluno_id, ultimo_acesso, criado_em, alunos ( id, nome_completo, telefone_whatsapp, email )')
       .eq('status', 'ativa');
 
+    // Mapa rápido por matricula_id para usar na montagem final sem depender de FK no Supabase
+    const mapaMatriculas = new Map();
+    if (matriculasAtivas) {
+      for (const m of matriculasAtivas) {
+        mapaMatriculas.set(m.id, m);
+      }
+    }
+
     if (matriculasAtivas && matriculasAtivas.length > 0) {
       for (const mat of matriculasAtivas) {
         if (!mat.alunos) continue;
@@ -729,7 +737,6 @@ app.get('/api/admin/alertas', verificarToken, async (req, res) => {
           .limit(1)
           .maybeSingle();
 
-        // Pega a data mais recente entre as 3 interações pedagógicas (ou data de matrícula se nunca fez nada)
         const datasInteracao = [
           ultChat?.created_at,
           ultAtiv?.submetido_em || ultAtiv?.created_at,
@@ -740,9 +747,7 @@ app.get('/api/admin/alertas', verificarToken, async (req, res) => {
         const ultimaInteracaoMs = datasInteracao.length > 0 ? Math.max(...datasInteracao) : 0;
         const diasSemInteracao = Math.floor((Date.now() - ultimaInteracaoMs) / (24 * 60 * 60 * 1000));
 
-        // Se passou de 5 dias sem leitura, mural ou atividade:
         if (diasSemInteracao >= 5) {
-          // Verifica se já existe alerta de inatividade pendente OU resolvido nos últimos 5 dias (evita spam de e-mail)
           const { data: alertaRecente } = await supabase
             .from('alertas_coordenacao')
             .select('id, status, criado_em')
@@ -755,7 +760,6 @@ app.get('/api/admin/alertas', verificarToken, async (req, res) => {
             const msgAlerta = `Aluno há ${diasSemInteracao} dias sem realizar leitura, atividade ou mural.`;
             let emailDisparado = false;
 
-            // Dispara e-mail automaticamente se o aluno tiver e-mail e GMAIL_USER estiver configurado
             if (mat.alunos.email && process.env.GMAIL_USER && process.env.GMAIL_APP_PASSWORD) {
               try {
                 await transporter.sendMail({
@@ -786,7 +790,6 @@ app.get('/api/admin/alertas', verificarToken, async (req, res) => {
               }
             }
 
-            // Grava o alerta pendente para aparecer na tela do coordenador com o link do WhatsApp
             await supabase.from('alertas_coordenacao').insert({
               matricula_id: mat.id,
               tipo: 'inatividade',
@@ -798,66 +801,98 @@ app.get('/api/admin/alertas', verificarToken, async (req, res) => {
       }
     }
 
-    // 2. Busca todos os alertas pendentes atualizados para exibir ao coordenador
+    // 2. Busca todos os alertas pendentes SEM join automático (evita erro PGRST200)
     const { data: alertas, error } = await supabase
       .from('alertas_coordenacao')
-      .select(`
-        id, tipo, mensagem_original, status, criado_em, 
-        matriculas_estudos ( id, alunos ( nome_completo, telefone_whatsapp, email ) )
-      `)
+      .select('id, matricula_id, tipo, mensagem_original, status, criado_em')
       .eq('status', 'pendente')
       .order('criado_em', { ascending: false });
 
     if (error) throw error;
 
-    for (let alerta of alertas || []) {
-      if (alerta.tipo === 'correcao_pendente' && alerta.matriculas_estudos) {
-        const { data: resposta } = await supabase.from('respostas_atividades')
+    const alertasCompletos = [];
+
+    for (const alerta of alertas || []) {
+      let matInfo = mapaMatriculas.get(alerta.matricula_id);
+
+      // Caso a matrícula não esteja no mapa (ex: concluída), busca individualmente
+      if (!matInfo && alerta.matricula_id) {
+        const { data: mExtra } = await supabase
+          .from('matriculas_estudos')
+          .select('id, aluno_id, alunos ( nome_completo, telefone_whatsapp, email )')
+          .eq('id', alerta.matricula_id)
+          .maybeSingle();
+        matInfo = mExtra;
+      }
+
+      if (!matInfo || !matInfo.alunos) continue;
+
+      const item = {
+        ...alerta,
+        matriculas_estudos: {
+          id: matInfo.id,
+          alunos: matInfo.alunos
+        }
+      };
+
+      if (alerta.tipo === 'correcao_pendente') {
+        const { data: resposta } = await supabase
+          .from('respostas_atividades')
           .select('atividade_id, atividades(enunciado)')
-          .eq('matricula_id', alerta.matriculas_estudos.id)
+          .eq('aluno_id', matInfo.aluno_id)
           .eq('status', 'AGUARDANDO_CORRECAO')
           .limit(1)
           .maybeSingle();
-        if (resposta && resposta.atividades) alerta.contexto_atividade = resposta.atividades.enunciado;
+        if (resposta && resposta.atividades) item.contexto_atividade = resposta.atividades.enunciado;
       }
+
+      alertasCompletos.push(item);
     }
 
-    return res.json(alertas || []);
+    return res.json(alertasCompletos);
   } catch (error) {
     console.error("Erro ao processar Busca Ativa:", error);
     return res.status(500).json({ erro: "Erro ao processar Busca Ativa" });
   }
 });
 
-// Marcar alerta como resolvido (ou reenviar e-mail manualmente se necessário)
+// Marcar alerta como resolvido (ou reenviar e-mail manualmente) sem depender de FK
 app.post('/api/admin/alertas/:id/enviar', verificarToken, async (req, res) => {
   const { id } = req.params;
   const { apenas_resolver } = req.body || {};
   try {
     const { data: alerta, error: errAlerta } = await supabase
       .from('alertas_coordenacao')
-      .select(`id, tipo, mensagem_original, matriculas_estudos (alunos (nome_completo, email))`)
+      .select('id, matricula_id, tipo, mensagem_original')
       .eq('id', id)
       .single();
 
     if (errAlerta || !alerta) throw new Error("Alerta não encontrado");
-    const aluno = alerta.matriculas_estudos.alunos;
 
-    if (!apenas_resolver && aluno.email && process.env.GMAIL_USER) {
-      let assunto = '👋 Vamos retomar seus estudos na Nova EJA?';
-      let html = `<p>Olá, <strong>${aluno.nome_completo}</strong>! Acesse a plataforma Tutor Nova EJA para continuar suas leituras e atividades.</p>`;
-      if (alerta.tipo === 'apto_certificacao') {
-        assunto = '🏆 Parabéns! Você está apto à certificação!';
-        html = `<p>Olá, <strong>${aluno.nome_completo}</strong>! Você atingiu a nota mínima em todas as competências!</p>`;
+    if (!apenas_resolver && alerta.matricula_id) {
+      const { data: mat } = await supabase
+        .from('matriculas_estudos')
+        .select('alunos (nome_completo, email)')
+        .eq('id', alerta.matricula_id)
+        .maybeSingle();
+
+      const aluno = mat?.alunos;
+      if (aluno && aluno.email && process.env.GMAIL_USER) {
+        let assunto = '👋 Vamos retomar seus estudos na Nova EJA?';
+        let html = `<p>Olá, <strong>${aluno.nome_completo}</strong>! Acesse a plataforma Tutor Nova EJA para continuar suas leituras e atividades.</p>`;
+        if (alerta.tipo === 'apto_certificacao') {
+          assunto = '🏆 Parabéns! Você está apto à certificação!';
+          html = `<p>Olá, <strong>${aluno.nome_completo}</strong>! Você atingiu a nota mínima em todas as competências!</p>`;
+        }
+        try {
+          await transporter.sendMail({
+            from: `"Tutor Nova EJA - SESI" <${process.env.GMAIL_USER}>`,
+            to: aluno.email,
+            subject: assunto,
+            html
+          });
+        } catch (e) { console.error("Erro ao enviar e-mail:", e.message); }
       }
-      try {
-        await transporter.sendMail({
-          from: `"Tutor Nova EJA - SESI" <${process.env.GMAIL_USER}>`,
-          to: aluno.email,
-          subject: assunto,
-          html
-        });
-      } catch (e) { console.error("Erro ao enviar e-mail:", e.message); }
     }
 
     await supabase.from('alertas_coordenacao').update({ status: 'resolvido' }).eq('id', id);
