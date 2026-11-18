@@ -1203,7 +1203,7 @@ const { data: rds, error } = await supabase.from('rds_solicitacoes').insert({
   nome_aluno: nome_aluno.trim().toUpperCase(),
   turma: turma.trim().toUpperCase(),
   plataforma: plataforma || null,
-  aguardando_analise: areas.join(', '), // <-- Adicione esta linha
+  aguardando_analise: areas, // <-- Passe o array diretamente, sem .join(', ')
   observacao: observacao || null,
   criado_por: coordId,
   status_geral: 'pendente'
@@ -1245,12 +1245,13 @@ app.put('/api/admin/rds/:id', verificarToken, async (req, res) => {
   try {
     // Atualiza dados principais
     const { data: rds, error } = await supabase.from('rds_solicitacoes').update({
-      etapa_ensino,
-      nome_aluno: nome_aluno.trim().toUpperCase(),
-      turma: turma.trim().toUpperCase(),
-      plataforma: plataforma || null,
-      observacao: observacao || null
-    }).eq('id', id).select().single();
+  etapa_ensino,
+  nome_aluno: nome_aluno.trim().toUpperCase(),
+  turma: turma.trim().toUpperCase(),
+  plataforma: plataforma || null,
+  aguardando_analise: areas, // <-- Adicione aqui também se desejar
+  observacao: observacao || null
+}).eq('id', id).select().single();
 
     if (error) throw error;
 
