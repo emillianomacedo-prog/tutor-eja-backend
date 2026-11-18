@@ -1283,12 +1283,12 @@ app.put('/api/admin/rds/:id', verificarToken, async (req, res) => {
   }
 });
 
-// Dar baixa em uma área específica
-app.patch('/api/admin/rds/area/:area_id/baixa', verificarToken, async (req, res) => {
+// Aceita tanto POST quanto PATCH para evitar qualquer bloqueio de CORS
+app.post('/api/admin/rds/area/:area_id/baixa', verificarToken, async (req, res) => {
   const { area_id } = req.params;
   const { observacao } = req.body;
 
-  console.log('📥 PATCH /api/admin/rds/area/baixa - ID:', area_id, 'Obs:', observacao);
+  console.log('📥 POST /api/admin/rds/area/baixa - ID:', area_id);
 
   try {
     const token = req.headers.authorization?.split(' ')[1];
@@ -1306,13 +1306,12 @@ app.patch('/api/admin/rds/area/:area_id/baixa', verificarToken, async (req, res)
       return res.status(500).json({ erro: error.message });
     }
 
-    // Recalcula o status geral do RDS
     await atualizarStatusGeralRDS(area.rds_id);
 
-    console.log('✅ Baixa concluída com sucesso para área:', area_id);
+    console.log('✅ Baixa concluída:', area_id);
     return res.json({ area, mensagem: 'Baixa realizada com sucesso!' });
   } catch (err) {
-    console.error('🚨 Erro interno ao dar baixa:', err);
+    console.error('🚨 Erro ao dar baixa:', err);
     return res.status(500).json({ erro: err.message || 'Erro ao dar baixa' });
   }
 });
