@@ -1183,9 +1183,11 @@ app.get('/api/admin/rds', verificarToken, async (req, res) => {
   }
 });
 
-// Criar RDS com múltiplas áreas (Apenas Coordenador)
+// Criar RDS com múltiplas áreas
 app.post('/api/admin/rds', verificarToken, async (req, res) => {
   const { etapa_ensino, nome_aluno, turma, plataforma, observacao, areas } = req.body;
+
+  console.log('📥 POST /api/admin/rds - Payload recebido:', { etapa_ensino, nome_aluno, turma, plataforma, areas });
 
   if (!etapa_ensino || !nome_aluno || !turma || !areas || areas.length === 0) {
     return res.status(400).json({ erro: 'Campos obrigatórios: etapa, nome, turma e pelo menos 1 área' });
@@ -1206,7 +1208,10 @@ app.post('/api/admin/rds', verificarToken, async (req, res) => {
       status_geral: 'pendente'
     }).select().single();
 
-    if (error) throw error;
+    if (error) {
+      console.error('❌ Erro ao criar RDS:', error);
+      throw new Error(`Erro no RDS principal: ${error.message}`);
+    }
 
     // 2. Insere as áreas
     const areasInsert = areas.map(area => ({
@@ -1216,12 +1221,18 @@ app.post('/api/admin/rds', verificarToken, async (req, res) => {
     }));
 
     const { error: errAreas } = await supabase.from('rds_areas').insert(areasInsert);
-    if (errAreas) throw errAreas;
+    if (errAreas) {
+      console.error('❌ Erro ao inserir áreas:', errAreas);
+      // Rollback: deleta o RDS que já foi criado
+      await supabase.from('rds_solicitacoes').delete().eq('id', rds.id);
+      throw new Error(`Erro nas áreas: ${errAreas.message}`);
+    }
 
+    console.log('✅ RDS criado com sucesso:', rds.id);
     return res.status(201).json({ rds, mensagem: 'RDS cadastrado!' });
   } catch (err) {
-    console.error('[admin/rds POST]', err);
-    return res.status(500).json({ erro: 'Erro ao criar RDS' });
+    console.error('🚨 Erro ao criar RDS:', err.message);
+    return res.status(500).json({ erro: err.message || 'Erro ao criar RDS' });
   }
 });
 
