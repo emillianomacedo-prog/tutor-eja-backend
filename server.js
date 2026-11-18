@@ -1318,12 +1318,37 @@ app.post('/api/admin/rds/area/:area_id/baixa', verificarToken, async (req, res) 
 
 // Excluir RDS
 app.delete('/api/admin/rds/:id', verificarToken, async (req, res) => {
+  const { id } = req.params;
+  console.log('🗑️ DELETE /api/admin/rds - ID:', id);
+
   try {
-    const { error } = await supabase.from('rds_solicitacoes').delete().eq('id', req.params.id);
-    if (error) throw error;
+    // 1. Remove primeiro as áreas vinculadas (evita erro de Foreign Key)
+    const { error: errAreas } = await supabase
+      .from('rds_areas')
+      .delete()
+      .eq('rds_id', id);
+
+    if (errAreas) {
+      console.error('❌ Erro ao excluir áreas do RDS:', errAreas);
+      throw new Error(errAreas.message);
+    }
+
+    // 2. Remove o registro RDS principal
+    const { error } = await supabase
+      .from('rds_solicitacoes')
+      .delete()
+      .eq('id', id);
+
+    if (error) {
+      console.error('❌ Erro ao excluir RDS principal:', error);
+      throw new Error(error.message);
+    }
+
+    console.log('✅ RDS excluído com sucesso:', id);
     return res.json({ mensagem: 'RDS excluído com sucesso' });
   } catch (err) {
-    return res.status(500).json({ erro: 'Erro ao excluir RDS' });
+    console.error('🚨 Falha ao excluir RDS:', err.message);
+    return res.status(500).json({ erro: err.message || 'Erro ao excluir RDS' });
   }
 });
 
