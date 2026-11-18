@@ -1197,16 +1197,17 @@ app.post('/api/admin/rds', verificarToken, async (req, res) => {
     const token = req.headers.authorization?.split(' ')[1];
     const coordId = token.split('_')[1];
 
-    // 1. Cria o RDS principal
-    const { data: rds, error } = await supabase.from('rds_solicitacoes').insert({
-      etapa_ensino,
-      nome_aluno: nome_aluno.trim().toUpperCase(),
-      turma: turma.trim().toUpperCase(),
-      plataforma: plataforma || null,
-      observacao: observacao || null,
-      criado_por: coordId,
-      status_geral: 'pendente'
-    }).select().single();
+// 1. Cria o RDS principal
+const { data: rds, error } = await supabase.from('rds_solicitacoes').insert({
+  etapa_ensino,
+  nome_aluno: nome_aluno.trim().toUpperCase(),
+  turma: turma.trim().toUpperCase(),
+  plataforma: plataforma || null,
+  aguardando_analise: areas.join(', '), // <-- Adicione esta linha
+  observacao: observacao || null,
+  criado_por: coordId,
+  status_geral: 'pendente'
+}).select().single();
 
     if (error) {
       console.error('❌ Erro ao criar RDS:', error);
