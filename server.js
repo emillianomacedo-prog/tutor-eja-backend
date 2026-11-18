@@ -1288,6 +1288,8 @@ app.patch('/api/admin/rds/area/:area_id/baixa', verificarToken, async (req, res)
   const { area_id } = req.params;
   const { observacao } = req.body;
 
+  console.log('📥 PATCH /api/admin/rds/area/baixa - ID:', area_id, 'Obs:', observacao);
+
   try {
     const token = req.headers.authorization?.split(' ')[1];
     const coordId = token.split('_')[1];
@@ -1299,15 +1301,19 @@ app.patch('/api/admin/rds/area/:area_id/baixa', verificarToken, async (req, res)
       observacao: observacao || null
     }).eq('id', area_id).select().single();
 
-    if (error) throw error;
+    if (error) {
+      console.error('❌ Erro Supabase ao dar baixa:', error);
+      return res.status(500).json({ erro: error.message });
+    }
 
     // Recalcula o status geral do RDS
     await atualizarStatusGeralRDS(area.rds_id);
 
+    console.log('✅ Baixa concluída com sucesso para área:', area_id);
     return res.json({ area, mensagem: 'Baixa realizada com sucesso!' });
   } catch (err) {
-    console.error('[admin/rds/area baixa]', err);
-    return res.status(500).json({ erro: 'Erro ao dar baixa' });
+    console.error('🚨 Erro interno ao dar baixa:', err);
+    return res.status(500).json({ erro: err.message || 'Erro ao dar baixa' });
   }
 });
 
