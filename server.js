@@ -1169,10 +1169,10 @@ app.get('/api/admin/rds', verificarToken, async (req, res) => {
 
     let filtrado = rdsList || [];
 
-    // Se for professor, retornar apenas RDS onde ele tem uma área atribuída
+// Se for professor, retornar apenas RDS onde ele tem uma área PENDENTE atribuída
     if (coord && coord.papel === 'professor' && coord.area) {
       filtrado = filtrado.filter(r => 
-        r.rds_areas && r.rds_areas.some(ar => ar.area === coord.area)
+        r.rds_areas && r.rds_areas.some(ar => ar.area === coord.area && ar.status === 'pendente')
       );
     }
 
