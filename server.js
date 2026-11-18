@@ -1288,12 +1288,34 @@ app.post('/api/admin/rds/area/:area_id/baixa', verificarToken, async (req, res) 
   const { area_id } = req.params;
   const { observacao } = req.body;
 
-  console.log('📥 POST /api/admin/rds/area/baixa - ID:', area_id);
-
   try {
     const token = req.headers.authorization?.split(' ')[1];
     const coordId = token.split('_')[1];
 
+    // 1. Verifica quem está fazendo a requisição
+    const { data: usuario } = await supabase
+      .from('coordenadores')
+      .select('papel, area')
+      .eq('id', coordId)
+      .single();
+
+    // 2. Verifica qual é a área do RDS que está recebendo baixa
+    const { data: areaAlvo, error: errBusca } = await supabase
+      .from('rds_areas')
+      .select('area, rds_id')
+      .eq('id', area_id)
+      .single();
+
+    if (errBusca || !areaAlvo) {
+      return res.status(404).json({ erro: 'Área do RDS não encontrada.' });
+    }
+
+    // 3. Bloqueia se for professor tentando dar baixa em área diferente da sua
+    if (usuario && usuario.papel === 'professor' && usuario.area !== areaAlvo.area) {
+      return res.status(403).json({ erro: 'Você não tem permissão para dar baixa nesta área.' });
+    }
+
+    // 4. Realiza a baixa normalmente
     const { data: area, error } = await supabase.from('rds_areas').update({
       status: 'concluido',
       analisado_por: coordId,
@@ -1302,16 +1324,13 @@ app.post('/api/admin/rds/area/:area_id/baixa', verificarToken, async (req, res) 
     }).eq('id', area_id).select().single();
 
     if (error) {
-      console.error('❌ Erro Supabase ao dar baixa:', error);
       return res.status(500).json({ erro: error.message });
     }
 
     await atualizarStatusGeralRDS(area.rds_id);
 
-    console.log('✅ Baixa concluída:', area_id);
     return res.json({ area, mensagem: 'Baixa realizada com sucesso!' });
   } catch (err) {
-    console.error('🚨 Erro ao dar baixa:', err);
     return res.status(500).json({ erro: err.message || 'Erro ao dar baixa' });
   }
 });
