@@ -1034,100 +1034,130 @@ app.post('/api/finalizar-curso/:matricula_id', async (req, res) => {
   } catch (error) { return res.status(500).json({ erro: "Erro" }); }
 });
 
-// =====================================================================
-// MURAIS
-// =====================================================================
-
-app.get('/api/murais', async (req, res) => {
-  const { area, aluno_id } = req.query;
-  if (!aluno_id) return res.status(400).json({ erro: 'Obrigatório' });
-  try {
-    const alunoIdReal = await resolverAlunoId(aluno_id);
-    let q = supabase.from('murais').select('id, titulo, texto_base, area, competencia').eq('ativo', true);
-    if (area) q = q.eq('area', area);
-    const { data: murais } = await q.order('created_at');
-    if (!murais || murais.length === 0) return res.json({ murais: [] });
-    const ids = murais.map(m => m.id);
-    const { data: postagens } = await supabase.from('postagens_murais').select('mural_id, status, nota_ia, tentativas, feedback_ia').eq('aluno_id', alunoIdReal).in('mural_id', ids);
-    const mapa = Object.fromEntries((postagens || []).map(p => [p.mural_id, p]));
-    return res.json({ murais: murais.map(m => ({ ...m, status: mapa[m.id]?.status || 'INICIAR', nota_ia: mapa[m.id]?.nota_ia ?? null, tentativas: mapa[m.id]?.tentativas || 0, feedback_ia: mapa[m.id]?.feedback_ia || null })) });
-  } catch (err) { return res.status(500).json({ erro: 'Erro' }); }
-});
-
-app.post('/api/murais/:id/iniciar', async (req, res) => {
-  const { aluno_id } = req.body;
-  try {
-    const alunoIdReal = await resolverAlunoId(aluno_id);
-    const { data, error } = await supabase.from('postagens_murais').upsert({ mural_id: req.params.id, aluno_id: alunoIdReal, status: 'EM_ANDAMENTO' }, { onConflict: 'mural_id,aluno_id', ignoreDuplicates: false }).select().single();
-    return res.json({ postagem: data });
-  } catch (err) { return res.status(500).json({ erro: 'Erro' }); }
-});
-
-app.post('/api/murais/:id/mediar', async (req, res) => {
-  const { aluno_id, texto, segmento } = req.body;
-  if (!aluno_id || !texto) return res.status(400).json({ erro: 'Erro' });
-  try {
-    const alunoIdReal = await resolverAlunoId(aluno_id);
-    const { data: mural } = await supabase.from('murais').select('*').eq('id', req.params.id).single();
-    const resultado = await mediarMuralIA({ mural, textoAluno: texto.trim(), competencia: mural.competencia, segmento: segmento || 'medio' });
-    await supabase.from('postagens_murais').upsert({ mural_id: mural.id, aluno_id: alunoIdReal, texto: texto.trim(), status: 'EM_ANDAMENTO' }, { onConflict: 'mural_id,aluno_id', ignoreDuplicates: false });
-    return res.json({ mediacao: resultado });
-  } catch (err) { return res.status(500).json({ erro: 'Erro' }); }
-});
-
-app.post('/api/murais/:id/avaliar', async (req, res) => {
-  const { aluno_id, texto, segmento, matricula_id } = req.body;
-  if (!aluno_id || !texto) return res.status(400).json({ erro: 'Erro' });
-  try {
-    const alunoIdReal = await resolverAlunoId(aluno_id);
-    const { data: mural } = await supabase.from('murais').select('*').eq('id', req.params.id).single();
-    const { data: atual } = await supabase.from('postagens_murais').select('tentativas, status').eq('mural_id', mural.id).eq('aluno_id', alunoIdReal).maybeSingle();
-    if (atual?.status === 'FINALIZADA') return res.status(400).json({ erro: 'Finalizado.' });
-    const tentativas = (atual?.tentativas || 0) + 1;
-    if (tentativas > MAX_TENTATIVAS_MURAL) {
-      if (matricula_id) await supabase.from('alertas_coordenacao').insert({ matricula_id, tipo: 'mural_refazer_limite', mensagem_original: `Limite excedido.`, status: 'pendente' });
-      return res.status(429).json({ erro: 'Limite excedido.' });
-    }
-    const resultado = await avaliarMuralIA({ mural, textoAluno: texto.trim(), competencia: mural.competencia, segmento: segmento || 'medio' });
-    const { data } = await supabase.from('postagens_murais').upsert({ mural_id: mural.id, aluno_id: alunoIdReal, texto: texto.trim(), rascunho: null, nota_ia: resultado.nota, feedback_ia: resultado.feedback, status: resultado.status_sugerido, tentativas, avaliado_em: new Date().toISOString(), submetido_em: new Date().toISOString() }, { onConflict: 'mural_id,aluno_id', ignoreDuplicates: false }).select().single();
-    if (data.status === 'FINALIZADA') { try { await verificarConclusao(alunoIdReal); } catch (e) { } }
-    return res.json({ postagem: data, resultado_ia: { pontos_fortes: resultado.pontos_fortes || [], pontos_a_melhorar: resultado.pontos_a_melhorar || [] } });
-  } catch (err) { return res.status(500).json({ erro: 'Erro' }); }
-});
-
-app.post('/api/murais', verificarToken, async (req, res) => {
-  const { titulo, texto_base, area, competencia, rubrica_ia, segmento } = req.body;
-  try {
-    const { data, error } = await supabase.from('murais').insert({ 
-      titulo, texto_base, area, competencia: competencia || null, rubrica_ia: rubrica_ia || null, segmento: segmento || null 
-    }).select().single();
-    if (error) throw error;
-    return res.status(201).json({ mural: data });
-  } catch (err) { return res.status(500).json({ erro: 'Erro' }); }
-});
-
-app.get('/api/admin/murais', verificarToken, async (req, res) => {
+// LISTAR RESPOSTAS / POSTAGENS DE UM MURAL ESPECÍFICO
+app.get('/api/admin/murais/:id/respostas', verificarToken, async (req, res) => {
   try {
     const token = req.headers.authorization?.split(' ')[1];
     const coordId = token.split('_')[1];
-    const { data: coord } = await supabase.from('coordenadores').select('papel, area').eq('id', coordId).single();
-    let query = supabase.from('murais').select('*').order('created_at', { ascending: false });
-    if (coord && coord.papel === 'professor' && coord.area) query = query.eq('area', coord.area);
-    const { data, error } = await query;
+    const { data: coord } = await supabase
+      .from('coordenadores')
+      .select('papel, area')
+      .eq('id', coordId)
+      .single();
+
+    const { data: mural, error: errMural } = await supabase
+      .from('murais')
+      .select('id, area')
+      .eq('id', req.params.id)
+      .single();
+
+    if (errMural || !mural) {
+      return res.status(404).json({ erro: 'Mural não encontrado.' });
+    }
+
+    if (coord && coord.papel === 'professor' && coord.area && mural.area !== coord.area) {
+      return res.status(403).json({ erro: 'Acesso negado: mural de outra área do conhecimento.' });
+    }
+
+    // Busca postagens que já possuem texto enviado pelo aluno
+    const { data: postagens, error } = await supabase
+      .from('postagens_murais')
+      .select('id, mural_id, aluno_id, texto, nota_ia, feedback_ia, status, tentativas, submetido_em, avaliado_em')
+      .eq('mural_id', req.params.id)
+      .not('texto', 'is', null)
+      .order('submetido_em', { ascending: false });
+
     if (error) throw error;
-    return res.json(data || []);
+    if (!postagens || postagens.length === 0) return res.json([]);
+
+    const alunoIds = [...new Set(postagens.map(p => p.aluno_id).filter(Boolean))];
+
+    const [{ data: alunos }, { data: matriculas }] = await Promise.all([
+      supabase.from('alunos').select('id, nome_completo, cpf').in('id', alunoIds),
+      supabase.from('matriculas_estudos').select('aluno_id, segmento, turma').in('aluno_id', alunoIds)
+    ]);
+
+    const mapaAlunos = Object.fromEntries((alunos || []).map(a => [a.id, a]));
+    const mapaMatriculas = Object.fromEntries((matriculas || []).map(m => [m.aluno_id, m]));
+
+    const formatado = postagens.map(p => {
+      const aluno = mapaAlunos[p.aluno_id] || {};
+      const mat = mapaMatriculas[p.aluno_id] || {};
+      const marcadorContestacao = '[NOTA CONTESTADA PELO PROFESSOR]';
+      const foiContestada = (p.feedback_ia || '').includes(marcadorContestacao);
+
+      return {
+        id: p.id,
+        mural_id: p.mural_id,
+        aluno_id: p.aluno_id,
+        aluno_nome: aluno.nome_completo || 'Aluno não identificado',
+        cpf: aluno.cpf || '',
+        segmento: mat.segmento || '',
+        turma: mat.turma || '',
+        resposta: p.texto,
+        nota: p.nota_ia,
+        nota_ia: p.nota_ia,
+        feedback_ia: p.feedback_ia,
+        status: p.status,
+        tentativas: p.tentativas,
+        contestada: foiContestada,
+        respondido_em: p.submetido_em || p.avaliado_em
+      };
+    });
+
+    return res.json(formatado);
   } catch (err) {
-    console.error('[admin/murais GET]', err);
-    return res.status(500).json({ erro: 'Erro ao listar murais' });
+    console.error('[admin/murais/:id/respostas GET]', err);
+    return res.status(500).json({ erro: 'Erro ao buscar respostas do mural' });
   }
 });
 
-app.delete('/api/admin/murais/:id', verificarToken, async (req, res) => {
+// CONTESTAR / ALTERAR NOTA DO TUTOR IA NO MURAL
+app.put('/api/admin/murais/respostas/:respostaId/contestar', verificarToken, async (req, res) => {
   try {
-    const { error } = await supabase.from('murais').delete().eq('id', req.params.id);
-    if (error) throw error;
-    return res.json({ mensagem: 'Mural excluído' });
-  } catch (err) { return res.status(500).json({ erro: 'Erro ao excluir mural' }); }
+    const { nota, motivo_contestacao } = req.body;
+    const token = req.headers.authorization?.split(' ')[1];
+    const coordId = token.split('_')[1];
+
+    const [{ data: coord }, { data: atual, error: errBusca }] = await Promise.all([
+      supabase.from('coordenadores').select('nome, papel').eq('id', coordId).single(),
+      supabase.from('postagens_murais').select('id, nota_ia, feedback_ia, aluno_id').eq('id', req.params.respostaId).single()
+    ]);
+
+    if (errBusca || !atual) {
+      return res.status(404).json({ erro: 'Postagem do mural não encontrada.' });
+    }
+
+    const notaAnterior = atual.nota_ia !== null && atual.nota_ia !== undefined ? Number(atual.nota_ia).toFixed(1) : 'Sem nota';
+    const nomeAvaliador = coord?.nome || 'Professor/Coordenador';
+    const dataHoje = new Date().toLocaleDateString('pt-BR');
+
+    // Remove eventual bloco de contestação anterior para manter o histórico limpo
+    const feedbackBase = (atual.feedback_ia || '').split('\n\n[NOTA CONTESTADA PELO PROFESSOR]')[0].trim();
+    const novoFeedback = `${feedbackBase ? feedbackBase + '\n\n' : ''}[NOTA CONTESTADA PELO PROFESSOR]\nNota anterior (Tutor IA): ${notaAnterior} → Nova nota: ${Number(nota).toFixed(1)}\nAvaliador: ${nomeAvaliador} (${dataHoje})\nJustificativa: ${motivo_contestacao}`;
+
+    const { error: errUpdate } = await supabase
+      .from('postagens_murais')
+      .update({
+        nota_ia: Number(nota),
+        feedback_ia: novoFeedback,
+        status: 'FINALIZADA',
+        avaliado_em: new Date().toISOString()
+      })
+      .eq('id', req.params.respostaId);
+
+    if (errUpdate) throw errUpdate;
+
+    // Recalcula conclusão caso a nova nota aprove o aluno na competência
+    if (atual.aluno_id) {
+      try { await verificarConclusao(atual.aluno_id); } catch (e) {}
+    }
+
+    return res.json({ mensagem: 'Nota contestada e atualizada com sucesso!' });
+  } catch (err) {
+    console.error('[admin/murais/respostas/:respostaId/contestar PUT]', err);
+    return res.status(500).json({ erro: 'Erro ao contestar nota do mural' });
+  }
 });
 
 // =====================================================================
