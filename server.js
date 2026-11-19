@@ -206,7 +206,56 @@ function verificarToken(req, res, next) {
   if (!token) return res.status(401).json({ erro: "Acesso negado. Faça login." });
   next();
 }
+// =====================================================================
+// EDITAR CADASTRO / ALTERAR SENHA (COORDENADORES E PROFESSORES)
+// =====================================================================
+app.put('/api/admin/alterar-senha', verificarToken, async (req, res) => {
+  const { senha_atual, nova_senha } = req.body;
 
+  if (!senha_atual || !nova_senha) {
+    return res.status(400).json({ erro: 'Informe a senha atual e a nova senha.' });
+  }
+
+  if (nova_senha.trim().length < 4) {
+    return res.status(400).json({ erro: 'A nova senha deve ter pelo menos 4 caracteres.' });
+  }
+
+  try {
+    const token = req.headers.authorization?.split(' ')[1];
+    const coordId = token.split('_')[1];
+
+    // 1. Busca o usuário logado na tabela coordenadores
+    const { data: usuario, error: errBusca } = await supabase
+      .from('coordenadores')
+      .select('id, nome, senha')
+      .eq('id', coordId)
+      .single();
+
+    if (errBusca || !usuario) {
+      return res.status(404).json({ erro: 'Usuário não encontrado.' });
+    }
+
+    // 2. Valida se a senha atual confere
+    if (usuario.senha !== senha_atual) {
+      return res.status(401).json({ erro: 'A senha atual está incorreta.' });
+    }
+
+    // 3. Atualiza para a nova senha
+    const { error: errUpdate } = await supabase
+      .from('coordenadores')
+      .update({ senha: nova_senha.trim() })
+      .eq('id', coordId);
+
+    if (errUpdate) {
+      throw new Error(errUpdate.message);
+    }
+
+    return res.json({ mensagem: 'Senha alterada com sucesso!' });
+  } catch (err) {
+    console.error('Erro ao alterar senha:', err);
+    return res.status(500).json({ erro: 'Erro ao alterar senha: ' + err.message });
+  }
+});
 // =====================================================================
 // ATIVIDADES
 // =====================================================================
