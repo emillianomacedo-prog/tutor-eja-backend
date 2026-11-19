@@ -209,6 +209,26 @@ function verificarToken(req, res, next) {
 // =====================================================================
 // EDITAR CADASTRO / ALTERAR SENHA (COORDENADORES E PROFESSORES)
 // =====================================================================
+app.get('/api/admin/meu-perfil', verificarToken, async (req, res) => {
+  try {
+    const token = req.headers.authorization?.split(' ')[1];
+    const coordId = token.split('_')[1];
+
+    const { data: usuario, error } = await supabase
+      .from('coordenadores')
+      .select('id, nome, email, cargo')
+      .eq('id', coordId)
+      .single();
+
+    if (error || !usuario) {
+      return res.status(404).json({ erro: 'Usuário não encontrado.' });
+    }
+
+    return res.json(usuario);
+  } catch (err) {
+    return res.status(500).json({ erro: 'Erro ao carregar perfil.' });
+  }
+});
 app.put('/api/admin/alterar-senha', verificarToken, async (req, res) => {
   const { senha_atual, nova_senha } = req.body;
 
