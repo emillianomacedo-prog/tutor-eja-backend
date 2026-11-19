@@ -182,57 +182,44 @@ app.post('/api/login', async (req, res) => {
   } catch (e) { return res.status(500).json({ erro: "Erro interno." }); }
 });
 
+// 1. LOGIN ADMIN / PROFESSOR (aceita hashes $2a$, $2b$ e texto simples)
 app.post('/api/admin/login', async (req, res) => {
   const { email, password } = req.body;
   try {
-    const { data: coord, error } = await supabase.from('coordenadores').select('id, nome, email, senha, papel, area').eq('email', email).maybeSingle();
+    const { data: coord, error } = await supabase
+      .from('coordenadores')
+      .select('id, nome, email, senha, papel, area')
+      .eq('email', email)
+      .maybeSingle();
+
     if (error || !coord) return res.status(401).json({ erro: "E-mail não cadastrado." });
+
     let senhaValida = false;
-    if (coord.senha && coord.senha.startsWith('$2a$')) {
+    if (coord.senha && coord.senha.startsWith('$2')) {
       senhaValida = await bcrypt.compare(password, coord.senha);
-    } 
+    }
     if (!senhaValida) {
       if (coord.senha === password) senhaValida = true;
       if (password === 'Sesi2026@') senhaValida = true;
     }
+
     if (!senhaValida) return res.status(401).json({ erro: "Senha incorreta." });
+
     const fakeToken = `prof_${coord.id}_${Date.now()}`;
-    return res.json({ mensagem: "Login realizado", token: fakeToken, nome: coord.nome, papel: coord.papel, area: coord.area, coord_id: coord.id });
-  } catch (error) { return res.status(500).json({ erro: "Erro interno." }); }
-});
-
-function verificarToken(req, res, next) {
-  const token = req.headers.authorization?.split(' ')[1];
-  if (!token) return res.status(401).json({ erro: "Acesso negado. Faça login." });
-  next();
-}
-// =====================================================================
-// EDITAR CADASTRO / ALTERAR SENHA (COORDENADORES E PROFESSORES)
-// =====================================================================
-app.get('/api/admin/meu-perfil', verificarToken, async (req, res) => {
-  try {
-    const token = req.headers.authorization?.split(' ')[1];
-    const coordId = token.split('_')[1];
-
-    const { data: usuario, error } = await supabase
-      .from('coordenadores')
-      .select('*')
-      .eq('id', coordId)
-      .single();
-
-    if (error || !usuario) {
-      return res.status(404).json({ erro: 'Usuário não encontrado.' });
-    }
-
     return res.json({
-      id: usuario.id,
-      nome: usuario.nome,
-      email: usuario.email || usuario.email_institucional || usuario.login || ''
+      mensagem: "Login realizado",
+      token: fakeToken,
+      nome: coord.nome,
+      papel: coord.papel,
+      area: coord.area,
+      coord_id: coord.id
     });
-  } catch (err) {
-    return res.status(500).json({ erro: 'Erro ao carregar perfil.' });
+  } catch (error) {
+    return res.status(500).json({ erro: "Erro interno." });
   }
 });
+
+// 2. ALTERAR SENHA (valida hash $2a$/$2b$, texto simples ou Sesi2026@ e salva criptografado)
 app.put('/api/admin/alterar-senha', verificarToken, async (req, res) => {
   const { senha_atual, nova_senha } = req.body;
 
@@ -248,7 +235,6 @@ app.put('/api/admin/alterar-senha', verificarToken, async (req, res) => {
     const token = req.headers.authorization?.split(' ')[1];
     const coordId = token.split('_')[1];
 
-    // 1. Busca o usuário logado na tabela coordenadores
     const { data: usuario, error: errBusca } = await supabase
       .from('coordenadores')
       .select('id, nome, senha')
@@ -259,19 +245,32 @@ app.put('/api/admin/alterar-senha', verificarToken, async (req, res) => {
       return res.status(404).json({ erro: 'Usuário não encontrado.' });
     }
 
-    // 2. Valida se a senha atual confere
-    if (usuario.senha !== senha_atual) {
+    // Valida a senha atual com a mesma regra do login
+    let senhaAtualValida = false;
+    if (usuario.senha && usuario.senha.startsWith('$2')) {
+      senhaAtualValida = await bcrypt.compare(senha_atual, usuario.senha);
+    }
+    if (!senhaAtualValida) {
+      if (usuario.senha === senha_atual) senhaAtualValida = true;
+      if (senha_atual === 'Sesi2026@') senhaAtualValida = true;
+    }
+
+    if (!senhaAtualValida) {
       return res.status(401).json({ erro: 'A senha atual está incorreta.' });
     }
 
-    // 3. Atualiza para a nova senha
-    const { error: errUpdate } = await supabase
-      .from('coordenadores')
-      .update({ senha: nova_senha.trim() })
-      .eq('id', coordId);
+    // Gera o hash seguro da nova senha e salva na coluna 'senha'
+    const novaSenhaHash = await bcrypt.hash(nova_senha.trim(), 10);
 
-    if (errUpdate) {
-      throw new Error(errUpdate.message);
+    const { data: atualizado, error: errUpdate } = await supabase
+      .from('coordenadores')
+      .update({ senha: novaSenhaHash })
+      .eq('id', coordId)
+      .select('id');
+
+    if (errUpdate) throw new Error(errUpdate.message);
+    if (!atualizado || atualizado.length === 0) {
+      return res.status(403).json({ erro: 'Não foi possível atualizar o registro no banco.' });
     }
 
     return res.json({ mensagem: 'Senha alterada com sucesso!' });
