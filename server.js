@@ -1057,7 +1057,7 @@ app.get('/api/admin/murais', verificarToken, async (req, res) => {
     return res.status(500).json({ erro: 'Erro ao listar murais' });
   }
 });
-// LISTAR RESPOSTAS / POSTAGENS DE UM MURAL ESPECÍFICO
+// 1. LISTAR RESPOSTAS / POSTAGENS PENDENTES DE VALIDAÇÃO DE UM MURAL ESPECÍFICO
 app.get('/api/admin/murais/:id/respostas', verificarToken, async (req, res) => {
   try {
     const token = req.headers.authorization?.split(' ')[1];
@@ -1093,7 +1093,15 @@ app.get('/api/admin/murais/:id/respostas', verificarToken, async (req, res) => {
     if (error) throw error;
     if (!postagens || postagens.length === 0) return res.json([]);
 
-    const alunoIds = [...new Set(postagens.map(p => p.aluno_id).filter(Boolean))];
+    // Mantém apenas as respostas que ainda não foram validadas (nem contestadas, nem concordadas)
+    const pendentes = postagens.filter(p => {
+      const fb = p.feedback_ia || '';
+      return !fb.includes('[NOTA CONTESTADA PELO PROFESSOR]') && !fb.includes('[AVALIAÇÃO VALIDADA PELO PROFESSOR]');
+    });
+
+    if (pendentes.length === 0) return res.json([]);
+
+    const alunoIds = [...new Set(pendentes.map(p => p.aluno_id).filter(Boolean))];
 
     const [{ data: alunos }, { data: matriculas }] = await Promise.all([
       supabase.from('alunos').select('id, nome_completo, cpf').in('id', alunoIds),
@@ -1103,11 +1111,9 @@ app.get('/api/admin/murais/:id/respostas', verificarToken, async (req, res) => {
     const mapaAlunos = Object.fromEntries((alunos || []).map(a => [a.id, a]));
     const mapaMatriculas = Object.fromEntries((matriculas || []).map(m => [m.aluno_id, m]));
 
-    const formatado = postagens.map(p => {
+    const formatado = pendentes.map(p => {
       const aluno = mapaAlunos[p.aluno_id] || {};
       const mat = mapaMatriculas[p.aluno_id] || {};
-      const marcadorContestacao = '[NOTA CONTESTADA PELO PROFESSOR]';
-      const foiContestada = (p.feedback_ia || '').includes(marcadorContestacao);
 
       return {
         id: p.id,
@@ -1123,7 +1129,7 @@ app.get('/api/admin/murais/:id/respostas', verificarToken, async (req, res) => {
         feedback_ia: p.feedback_ia,
         status: p.status,
         tentativas: p.tentativas,
-        contestada: foiContestada,
+        contestada: false,
         respondido_em: p.submetido_em || p.avaliado_em
       };
     });
@@ -1135,7 +1141,53 @@ app.get('/api/admin/murais/:id/respostas', verificarToken, async (req, res) => {
   }
 });
 
-//3. CONTESTAR / ALTERAR NOTA DO TUTOR IA NO MURAL
+// 2. CONCORDAR COM A AVALIAÇÃO DO TUTOR IA (DÁ BAIXA NO RELATÓRIO)
+app.put('/api/admin/murais/respostas/:respostaId/concordar', verificarToken, async (req, res) => {
+  try {
+    const token = req.headers.authorization?.split(' ')[1];
+    const coordId = token.split('_')[1];
+
+    const [{ data: coord }, { data: atual, error: errBusca }] = await Promise.all([
+      supabase.from('coordenadores').select('nome, papel').eq('id', coordId).single(),
+      supabase.from('postagens_murais').select('id, feedback_ia, aluno_id').eq('id', req.params.respostaId).single()
+    ]);
+
+    if (errBusca || !atual) {
+      return res.status(404).json({ erro: 'Postagem do mural não encontrada.' });
+    }
+
+    const nomeAvaliador = coord?.nome || 'Professor/Coordenador';
+    const dataHoje = new Date().toLocaleDateString('pt-BR');
+
+    const feedbackBase = (atual.feedback_ia || '')
+      .split('\n\n[AVALIAÇÃO VALIDADA PELO PROFESSOR]')[0]
+      .split('\n\n[NOTA CONTESTADA PELO PROFESSOR]')[0]
+      .trim();
+
+    const novoFeedback = `${feedbackBase ? feedbackBase + '\n\n' : ''}[AVALIAÇÃO VALIDADA PELO PROFESSOR]\nAvaliação do Tutor IA confirmada por ${nomeAvaliador} em ${dataHoje}.`;
+
+    const { error: errUpdate } = await supabase
+      .from('postagens_murais')
+      .update({
+        feedback_ia: novoFeedback,
+        status: 'FINALIZADA'
+      })
+      .eq('id', req.params.respostaId);
+
+    if (errUpdate) throw errUpdate;
+
+    if (atual.aluno_id) {
+      try { await verificarConclusao(atual.aluno_id); } catch (e) {}
+    }
+
+    return res.json({ mensagem: 'Avaliação validada com sucesso!' });
+  } catch (err) {
+    console.error('[admin/murais/respostas/:respostaId/concordar PUT]', err);
+    return res.status(500).json({ erro: 'Erro ao validar avaliação do mural' });
+  }
+});
+
+// 3. CONTESTAR / ALTERAR NOTA DO TUTOR IA NO MURAL (TAMBÉM DÁ BAIXA NO RELATÓRIO)
 app.put('/api/admin/murais/respostas/:respostaId/contestar', verificarToken, async (req, res) => {
   try {
     const { nota, motivo_contestacao } = req.body;
@@ -1155,8 +1207,12 @@ app.put('/api/admin/murais/respostas/:respostaId/contestar', verificarToken, asy
     const nomeAvaliador = coord?.nome || 'Professor/Coordenador';
     const dataHoje = new Date().toLocaleDateString('pt-BR');
 
-    // Remove eventual bloco de contestação anterior para manter o histórico limpo
-    const feedbackBase = (atual.feedback_ia || '').split('\n\n[NOTA CONTESTADA PELO PROFESSOR]')[0].trim();
+    // Remove eventual bloco de validação/contestação anterior para manter o histórico limpo
+    const feedbackBase = (atual.feedback_ia || '')
+      .split('\n\n[NOTA CONTESTADA PELO PROFESSOR]')[0]
+      .split('\n\n[AVALIAÇÃO VALIDADA PELO PROFESSOR]')[0]
+      .trim();
+
     const novoFeedback = `${feedbackBase ? feedbackBase + '\n\n' : ''}[NOTA CONTESTADA PELO PROFESSOR]\nNota anterior (Tutor IA): ${notaAnterior} → Nova nota: ${Number(nota).toFixed(1)}\nAvaliador: ${nomeAvaliador} (${dataHoje})\nJustificativa: ${motivo_contestacao}`;
 
     const { error: errUpdate } = await supabase
@@ -1182,7 +1238,6 @@ app.put('/api/admin/murais/respostas/:respostaId/contestar', verificarToken, asy
     return res.status(500).json({ erro: 'Erro ao contestar nota do mural' });
   }
 });
-
 // =====================================================================
 // OFICINAS E CRONOGRAMA
 // =====================================================================
