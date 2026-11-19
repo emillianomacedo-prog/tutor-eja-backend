@@ -341,19 +341,33 @@ app.get('/api/admin/alunos/progresso', verificarToken, async (req, res) => {
 
     if (errMat) throw errMat;
 
-    // 2. Varre as atividades elaboradas pelos professores (Coluna 2 do Boletim)
-    // Tenta os nomes de tabela possíveis usados em /api/consultar-atividades/:matricula_id
+// 2. Busca todas as atividades para mapear atividade_id -> habilidade_codigo sem depender de FK no Supabase
+    const { data: todasAtividades } = await supabase
+      .from('atividades')
+      .select('id, habilidade_codigo, competencia, segmento, area');
+
+    const mapaAtividades = {};
+    (todasAtividades || []).forEach(a => {
+      mapaAtividades[String(a.id)] = a;
+    });
+
+    // Busca respostas sem join (evita falha silenciosa por nome de Foreign Key)
+    let tabelaRespostasUsada = null;
     let respostasAtividades = [];
-    for (const nomeTabela of ['respostas', 'respostas_atividades', 'respostas_alunos', 'atividades_respostas']) {
-      try {
-        const r = await supabase
-          .from(nomeTabela)
-          .select('*, atividades(habilidade_codigo, segmento, area)');
-        if (!r.error && Array.isArray(r.data)) {
-          respostasAtividades = r.data;
-          break;
-        }
-      } catch (e) {}
+    for (const nomeTabela of [
+      'respostas',
+      'respostas_atividades',
+      'respostas_alunos',
+      'atividades_respostas',
+      'envios_atividades',
+      'submissoes'
+    ]) {
+      const r = await supabase.from(nomeTabela).select('*').limit(5000);
+      if (!r.error && Array.isArray(r.data)) {
+        tabelaRespostasUsada = nomeTabela;
+        respostasAtividades = r.data;
+        break;
+      }
     }
 
     // Indexa habilidades dispensadas por matricula_id
@@ -367,12 +381,23 @@ app.get('/api/admin/alunos/progresso', verificarToken, async (req, res) => {
     // Indexa habilidades concluídas pelo aluno (por matricula_id e aluno_id)
     const habsFeitasPorChave = {};
     (respostasAtividades || []).forEach(r => {
-      const st = (r.status || '').toUpperCase();
+      const st = String(r.status || '').toUpperCase();
       const temNota = r.nota !== null && r.nota !== undefined;
-      if (st === 'FINALIZADA' || st === 'CORRIGIDA' || st === 'AGUARDANDO_CORRECAO' || temNota) {
-        const cod = r.atividades?.habilidade_codigo || r.habilidade_codigo;
+      const temResposta = Boolean(r.resposta || r.arquivo_url || r.texto_resposta || r.concluida);
+
+      if (
+        st === 'FINALIZADA' ||
+        st === 'CORRIGIDA' ||
+        st === 'AGUARDANDO_CORRECAO' ||
+        st === 'ENVIADA' ||
+        temNota ||
+        temResposta
+      ) {
+        const ativ = mapaAtividades[String(r.atividade_id)] || {};
+        const cod = ativ.habilidade_codigo || ativ.competencia || r.habilidade_codigo;
         if (!cod) return;
-        [r.matricula_id, r.aluno_id].filter(Boolean).forEach(id => {
+
+        [r.matricula_id, r.aluno_id, r.usuario_id].filter(Boolean).forEach(id => {
           const k = String(id);
           if (!habsFeitasPorChave[k]) habsFeitasPorChave[k] = new Set();
           habsFeitasPorChave[k].add(String(cod).trim());
