@@ -318,11 +318,10 @@ app.put('/api/admin/alterar-senha', verificarToken, async (req, res) => {
   }
 });
 // =====================================================================
-// VARREDURA COMPLETA E PROGRESSO RETROATIVO DOS ALUNOS (CALIBRADA)
+// VARREDURA COMPLETA E PROGRESSO RETROATIVO DOS ALUNOS (DEFINITIVA)
 // =====================================================================
 app.get('/api/admin/alunos/progresso', verificarToken, async (req, res) => {
   try {
-    // Função para normalizar segmento (ex: "Ensino Médio", "ensino_medio", "EM" -> padrão comparável)
     const normSeg = (s) => {
       const t = String(s || '')
         .toLowerCase()
@@ -337,6 +336,7 @@ app.get('/api/admin/alunos/progresso', verificarToken, async (req, res) => {
     const [
       { data: matriculas, error: errMat },
       { data: catalogo },
+      { data: todasAtividades },
       { data: dispensadas },
       { data: muraisAtivos },
       { data: postagensMurais },
@@ -344,7 +344,8 @@ app.get('/api/admin/alunos/progresso', verificarToken, async (req, res) => {
       { data: respostasAtividades, error: errResp }
     ] = await Promise.all([
       supabase.from('matriculas_estudos').select('id, aluno_id, segmento, status').limit(10000),
-      supabase.from('habilidades_catalogo').select('habilidade_codigo, segmento, area').limit(10000),
+      supabase.from('habilidades_catalogo').select('*').limit(10000),
+      supabase.from('atividades').select('id, habilidade_codigo, competencia, area, segmento').limit(10000),
       supabase.from('habilidades_dispensadas').select('matricula_id, habilidade_codigo').limit(10000),
       supabase.from('murais').select('id, segmento, area').eq('ativo', true).limit(10000),
       supabase.from('postagens_murais').select('aluno_id, mural_id, status, nota_ia').limit(10000),
@@ -352,8 +353,8 @@ app.get('/api/admin/alunos/progresso', verificarToken, async (req, res) => {
       supabase
         .from('respostas_atividades')
         .select(`
-          id, aluno_id, status, nota, tentativas,
-          atividades ( tipo, competencia, area, habilidade_codigo, segmento )
+          id, aluno_id, atividade_id, status, nota, tentativas,
+          atividades ( id, tipo, competencia, area, habilidade_codigo, segmento )
         `)
         .limit(20000)
     ]);
@@ -369,9 +370,9 @@ app.get('/api/admin/alunos/progresso', verificarToken, async (req, res) => {
       dispPorMat[k].add(String(d.habilidade_codigo).trim());
     });
 
-    // 2. Indexa habilidades concluídas por aluno_id (seguindo a mesma regra de /api/consultar-atividades)
+    // 2. Indexa habilidades e atividades concluídas por aluno_id
     const habsFeitasPorAluno = {};
-    const ativsConcluidasPorAluno = {};
+    const ativIdsFeitosPorAluno = {};
 
     (respostasAtividades || []).forEach(item => {
       let statusFinal = String(item.status || '').toUpperCase();
@@ -389,7 +390,12 @@ app.get('/api/admin/alunos/progresso', verificarToken, async (req, res) => {
       if (!concluida || !item.aluno_id) return;
 
       const alunoKey = String(item.aluno_id);
-      ativsConcluidasPorAluno[alunoKey] = (ativsConcluidasPorAluno[alunoKey] || 0) + 1;
+
+      const ativId = item.atividade_id || item.atividades?.id;
+      if (ativId) {
+        if (!ativIdsFeitosPorAluno[alunoKey]) ativIdsFeitosPorAluno[alunoKey] = new Set();
+        ativIdsFeitosPorAluno[alunoKey].add(String(ativId));
+      }
 
       const cod = item.atividades?.habilidade_codigo;
       if (cod) {
@@ -424,37 +430,54 @@ app.get('/api/admin/alunos/progresso', verificarToken, async (req, res) => {
       const matId = String(mat.id);
       const alunoId = String(mat.aluno_id);
       const segNorm = normSeg(mat.segmento);
-
-      // Habilidades obrigatórias do segmento (descontando as dispensadas da matrícula)
       const setDisp = dispPorMat[matId] || new Set();
-      const habsSegmento = (catalogo || []).filter(c => normSeg(c.segmento) === segNorm);
-      const habsObrigatorias = habsSegmento.filter(c => !setDisp.has(String(c.habilidade_codigo).trim()));
-      const setHabsObrig = new Set(habsObrigatorias.map(c => String(c.habilidade_codigo).trim()));
 
-      const setHabsFeitas = habsFeitasPorAluno[alunoId] || new Set();
-      const habsConcluidas = [...setHabsFeitas].filter(cod => setHabsObrig.has(cod)).length;
+      // Tenta obter universo de habilidades do catálogo (aceita segmento ou etapa)
+      const habsCatSeg = (catalogo || []).filter(c => normSeg(c.segmento || c.etapa) === segNorm);
+      const codigosUnicosCat = [...new Set(
+        habsCatSeg
+          .map(c => String(c.habilidade_codigo || c.codigo || '').trim())
+          .filter(Boolean)
+      )].filter(cod => !setDisp.has(cod));
 
-      // Murais obrigatórios do segmento (incluindo os gerais sem segmento)
+      let totalItensAtiv = 0;
+      let concluidosItensAtiv = 0;
+
+      if (codigosUnicosCat.length > 0) {
+        // Caso 1: Calcula por habilidades únicas do catálogo do segmento
+        const setObrig = new Set(codigosUnicosCat);
+        const setFeitas = habsFeitasPorAluno[alunoId] || new Set();
+        totalItensAtiv = setObrig.size;
+        concluidosItensAtiv = [...setFeitas].filter(cod => setObrig.has(cod)).length;
+      } else {
+        // Caso 2 (Fallback automático): Calcula direto sobre as atividades cadastradas no segmento
+        const ativsSeg = (todasAtividades || []).filter(a => {
+          if (normSeg(a.segmento) !== segNorm) return false;
+          if (a.habilidade_codigo && setDisp.has(String(a.habilidade_codigo).trim())) return false;
+          return true;
+        });
+        const setAtivObrig = new Set(ativsSeg.map(a => String(a.id)));
+        const setAtivFeitas = ativIdsFeitosPorAluno[alunoId] || new Set();
+        totalItensAtiv = setAtivObrig.size;
+        concluidosItensAtiv = [...setAtivFeitas].filter(id => setAtivObrig.has(id)).length;
+      }
+
+      // Murais obrigatórios do segmento
       const muraisObrig = (muraisAtivos || []).filter(m => !m.segmento || normSeg(m.segmento) === segNorm);
       const setMuraisObrig = new Set(muraisObrig.map(m => String(m.id)));
       const muraisConcluidos = [...(muraisFeitosPorAluno[alunoId] || [])].filter(id => setMuraisObrig.has(id)).length;
 
       const oficinasFeitas = oficinasPorChave[matId] || oficinasPorChave[alunoId] || 0;
-      const totalAtivsEnv = ativsConcluidasPorAluno[alunoId] || 0;
 
-      const totalObrigatorio = habsObrigatorias.length + muraisObrig.length;
-      const totalConcluido = habsConcluidas + muraisConcluidos;
+      const totalObrigatorio = totalItensAtiv + muraisObrig.length;
+      const totalConcluido = concluidosItensAtiv + muraisConcluidos;
 
       const percentual = totalObrigatorio > 0
         ? Math.min(100, Math.round((totalConcluido / totalObrigatorio) * 100))
         : 0;
 
       const partes = [];
-      if (habsObrigatorias.length > 0) {
-        partes.push(`Habilidades/Atividades: ${habsConcluidas}/${habsObrigatorias.length}`);
-      } else if (totalAtivsEnv > 0) {
-        partes.push(`Atividades concluídas: ${totalAtivsEnv}`);
-      }
+      if (totalItensAtiv > 0) partes.push(`Atividades: ${concluidosItensAtiv}/${totalItensAtiv}`);
       if (muraisObrig.length > 0) partes.push(`Murais: ${muraisConcluidos}/${muraisObrig.length}`);
       if (oficinasFeitas > 0) partes.push(`Oficinas: ${oficinasFeitas}`);
 
@@ -465,7 +488,6 @@ app.get('/api/admin/alunos/progresso', verificarToken, async (req, res) => {
         detalhe: partes.length > 0 ? partes.join(' · ') : 'Nenhuma atividade registrada ainda'
       };
 
-      // Grava nas duas chaves para o admin.html localizar independente de usar matricula_id ou aluno_id
       resultado[matId] = info;
       resultado[alunoId] = info;
     });
