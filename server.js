@@ -1229,7 +1229,7 @@ app.get('/api/admin/oficinas/:id', verificarToken, async (req, res) => {
     const { data, error } = await supabase.from('oficinas')
       .select(`
         *,
-        oficinas_presenciais ( aluno_id, nota, alunos ( nome_completo, cpf ) )
+        oficinas_presenciais ( aluno_id, area, nota, alunos(nome_completo) )
       `)
       .eq('id', req.params.id)
       .single();
@@ -1243,6 +1243,7 @@ app.get('/api/admin/oficinas/:id', verificarToken, async (req, res) => {
 
 app.post('/api/admin/oficinas', verificarToken, async (req, res) => {
   const { id, data_hora, segmento, competencia, habilidades, tema, objetivos, metodologia, recursos, avaliacao, fotos, alunos_notas } = req.body;
+  area: req.body.area || (req.body.alunos_notas?.[0]?.area) || null
   try {
     const token = req.headers.authorization?.split(' ')[1];
     const coordId = token.split('_')[1];
