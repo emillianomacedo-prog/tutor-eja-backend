@@ -1033,7 +1033,30 @@ app.post('/api/finalizar-curso/:matricula_id', async (req, res) => {
     return res.json({ mensagem: "Curso concluído!", relatorio: sintese });
   } catch (error) { return res.status(500).json({ erro: "Erro" }); }
 });
+// 1. LISTAR MURAIS (usado em Consulta Mural e Relatórios)
+app.get('/api/admin/murais', verificarToken, async (req, res) => {
+  try {
+    const token = req.headers.authorization?.split(' ')[1];
+    const coordId = token.split('_')[1];
+    const { data: coord } = await supabase
+      .from('coordenadores')
+      .select('papel, area')
+      .eq('id', coordId)
+      .single();
 
+    let query = supabase.from('murais').select('*').order('created_at', { ascending: false });
+    if (coord && coord.papel === 'professor' && coord.area) {
+      query = query.eq('area', coord.area);
+    }
+
+    const { data, error } = await query;
+    if (error) throw error;
+    return res.json(data || []);
+  } catch (err) {
+    console.error('[admin/murais GET]', err);
+    return res.status(500).json({ erro: 'Erro ao listar murais' });
+  }
+});
 // LISTAR RESPOSTAS / POSTAGENS DE UM MURAL ESPECÍFICO
 app.get('/api/admin/murais/:id/respostas', verificarToken, async (req, res) => {
   try {
@@ -1112,7 +1135,7 @@ app.get('/api/admin/murais/:id/respostas', verificarToken, async (req, res) => {
   }
 });
 
-// CONTESTAR / ALTERAR NOTA DO TUTOR IA NO MURAL
+//3. CONTESTAR / ALTERAR NOTA DO TUTOR IA NO MURAL
 app.put('/api/admin/murais/respostas/:respostaId/contestar', verificarToken, async (req, res) => {
   try {
     const { nota, motivo_contestacao } = req.body;
