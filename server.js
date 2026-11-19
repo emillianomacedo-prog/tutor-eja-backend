@@ -216,7 +216,7 @@ app.get('/api/admin/meu-perfil', verificarToken, async (req, res) => {
 
     const { data: usuario, error } = await supabase
       .from('coordenadores')
-      .select('id, nome, email, cargo')
+      .select('*')
       .eq('id', coordId)
       .single();
 
@@ -224,7 +224,11 @@ app.get('/api/admin/meu-perfil', verificarToken, async (req, res) => {
       return res.status(404).json({ erro: 'Usuário não encontrado.' });
     }
 
-    return res.json(usuario);
+    return res.json({
+      id: usuario.id,
+      nome: usuario.nome,
+      email: usuario.email || usuario.email_institucional || usuario.login || ''
+    });
   } catch (err) {
     return res.status(500).json({ erro: 'Erro ao carregar perfil.' });
   }
