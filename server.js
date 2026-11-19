@@ -219,7 +219,47 @@ app.post('/api/admin/login', async (req, res) => {
   }
 });
 
-// 2. ALTERAR SENHA (valida hash $2a$/$2b$, texto simples ou Sesi2026@ e salva criptografado)
+// Middleware de autenticação administrativa (definido ANTES das rotas protegidas)
+function verificarToken(req, res, next) {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer prof_')) {
+    return res.status(401).json({ erro: 'Token inválido ou ausente.' });
+  }
+  const token = authHeader.split(' ')[1];
+  const partes = token.split('_');
+  if (partes.length < 3 || !partes[1]) {
+    return res.status(401).json({ erro: 'Token malformado.' });
+  }
+  next();
+}
+
+// 2. PERFIL DO USUÁRIO LOGADO (para preencher e-mail no modal Editar Cadastro)
+app.get('/api/admin/meu-perfil', verificarToken, async (req, res) => {
+  try {
+    const token = req.headers.authorization?.split(' ')[1];
+    const coordId = token.split('_')[1];
+
+    const { data: usuario, error } = await supabase
+      .from('coordenadores')
+      .select('*')
+      .eq('id', coordId)
+      .single();
+
+    if (error || !usuario) {
+      return res.status(404).json({ erro: 'Usuário não encontrado.' });
+    }
+
+    return res.json({
+      id: usuario.id,
+      nome: usuario.nome,
+      email: usuario.email || usuario.email_institucional || usuario.login || ''
+    });
+  } catch (err) {
+    return res.status(500).json({ erro: 'Erro ao carregar perfil.' });
+  }
+});
+
+// 3. ALTERAR SENHA (valida hash $2a$/$2b$, texto simples ou Sesi2026@ e salva criptografado)
 app.put('/api/admin/alterar-senha', verificarToken, async (req, res) => {
   const { senha_atual, nova_senha } = req.body;
 
@@ -245,7 +285,6 @@ app.put('/api/admin/alterar-senha', verificarToken, async (req, res) => {
       return res.status(404).json({ erro: 'Usuário não encontrado.' });
     }
 
-    // Valida a senha atual com a mesma regra do login
     let senhaAtualValida = false;
     if (usuario.senha && usuario.senha.startsWith('$2')) {
       senhaAtualValida = await bcrypt.compare(senha_atual, usuario.senha);
@@ -259,7 +298,6 @@ app.put('/api/admin/alterar-senha', verificarToken, async (req, res) => {
       return res.status(401).json({ erro: 'A senha atual está incorreta.' });
     }
 
-    // Gera o hash seguro da nova senha e salva na coluna 'senha'
     const novaSenhaHash = await bcrypt.hash(nova_senha.trim(), 10);
 
     const { data: atualizado, error: errUpdate } = await supabase
@@ -279,6 +317,7 @@ app.put('/api/admin/alterar-senha', verificarToken, async (req, res) => {
     return res.status(500).json({ erro: 'Erro ao alterar senha: ' + err.message });
   }
 });
+
 // =====================================================================
 // ATIVIDADES
 // =====================================================================
@@ -739,10 +778,10 @@ app.put('/api/admin/editar-aluno/:matricula_id', verificarToken, async (req, res
     return res.json({ mensagem: "Aluno atualizado!" });
   } catch (error) { return res.status(500).json({ erro: "Erro" }); }
 });
+
 app.delete('/api/admin/excluir-aluno/:matricula_id', verificarToken, async (req, res) => {
   const { matricula_id } = req.params;
   try {
-    // 1. Busca o aluno_id vinculado à matrícula
     const { data: matricula, error: errMat } = await supabase
       .from('matriculas_estudos')
       .select('aluno_id')
@@ -755,7 +794,6 @@ app.delete('/api/admin/excluir-aluno/:matricula_id', verificarToken, async (req,
 
     const alunoId = matricula.aluno_id;
 
-    // 2. Remove registros vinculados à matrícula
     await supabase.from('habilidades_dispensadas').delete().eq('matricula_id', matricula_id);
     await supabase.from('habilidades_a_desenvolver').delete().eq('matricula_id', matricula_id);
     await supabase.from('mensagens_chat').delete().eq('matricula_id', matricula_id);
@@ -763,14 +801,12 @@ app.delete('/api/admin/excluir-aluno/:matricula_id', verificarToken, async (req,
     await supabase.from('relatorios_oficiais').delete().eq('matricula_id', matricula_id);
     await supabase.from('registros_qualitativos').delete().eq('matricula_id', matricula_id);
 
-    // 3. Remove registros vinculados ao aluno_id
     if (alunoId) {
       await supabase.from('respostas_atividades').delete().eq('aluno_id', alunoId);
       await supabase.from('postagens_murais').delete().eq('aluno_id', alunoId);
       await supabase.from('oficinas_presenciais').delete().eq('aluno_id', alunoId);
     }
 
-    // 4. Remove a matrícula e o cadastro do aluno
     await supabase.from('matriculas_estudos').delete().eq('id', matricula_id);
     if (alunoId) {
       await supabase.from('alunos').delete().eq('id', alunoId);
@@ -906,7 +942,6 @@ app.get('/api/admin/alertas', verificarToken, async (req, res) => {
       }
     }
 
-    // Filtra APENAS alertas de evasão ('inatividade')
     const { data: alertas, error } = await supabase
       .from('alertas_coordenacao')
       .select('id, matricula_id, tipo, mensagem_original, criado_em')
@@ -942,7 +977,6 @@ app.get('/api/admin/alertas', verificarToken, async (req, res) => {
   }
 });
 
-// Concluir (arquivar) ou reenviar e-mail de evasão
 app.post('/api/admin/alertas/:id/enviar', verificarToken, async (req, res) => {
   const { id } = req.params;
   const { apenas_resolver } = req.body || {};
@@ -1401,7 +1435,6 @@ app.get('/api/relatorio-dados/:matricula_id', verificarToken, async (req, res) =
 // RDS (Registro de Desenvolvimento do Estudante)
 // =====================================================================
 
-// Listar RDS: Coordenação vê tudo, Professor vê apenas onde ele tem pendência na sua área
 app.get('/api/admin/rds', verificarToken, async (req, res) => {
   try {
     const token = req.headers.authorization?.split(' ')[1];
@@ -1422,7 +1455,6 @@ app.get('/api/admin/rds', verificarToken, async (req, res) => {
 
     let filtrado = rdsList || [];
 
-// Se for professor, retornar apenas RDS onde ele tem uma área PENDENTE atribuída
     if (coord && coord.papel === 'professor' && coord.area) {
       filtrado = filtrado.filter(r => 
         r.rds_areas && r.rds_areas.some(ar => ar.area === coord.area && ar.status === 'pendente')
@@ -1436,7 +1468,6 @@ app.get('/api/admin/rds', verificarToken, async (req, res) => {
   }
 });
 
-// Criar RDS com múltiplas áreas
 app.post('/api/admin/rds', verificarToken, async (req, res) => {
   const { etapa_ensino, nome_aluno, turma, plataforma, observacao, areas } = req.body;
 
@@ -1450,24 +1481,22 @@ app.post('/api/admin/rds', verificarToken, async (req, res) => {
     const token = req.headers.authorization?.split(' ')[1];
     const coordId = token.split('_')[1];
 
-// 1. Cria o RDS principal
-const { data: rds, error } = await supabase.from('rds_solicitacoes').insert({
-  etapa_ensino,
-  nome_aluno: nome_aluno.trim().toUpperCase(),
-  turma: turma.trim().toUpperCase(),
-  plataforma: plataforma || null,
-  aguardando_analise: areas, // <-- Passe o array diretamente, sem .join(', ')
-  observacao: observacao || null,
-  criado_por: coordId,
-  status_geral: 'pendente'
-}).select().single();
+    const { data: rds, error } = await supabase.from('rds_solicitacoes').insert({
+      etapa_ensino,
+      nome_aluno: nome_aluno.trim().toUpperCase(),
+      turma: turma.trim().toUpperCase(),
+      plataforma: plataforma || null,
+      aguardando_analise: areas,
+      observacao: observacao || null,
+      criado_por: coordId,
+      status_geral: 'pendente'
+    }).select().single();
 
     if (error) {
       console.error('❌ Erro ao criar RDS:', error);
       throw new Error(`Erro no RDS principal: ${error.message}`);
     }
 
-    // 2. Insere as áreas
     const areasInsert = areas.map(area => ({
       rds_id: rds.id,
       area: area,
@@ -1477,7 +1506,6 @@ const { data: rds, error } = await supabase.from('rds_solicitacoes').insert({
     const { error: errAreas } = await supabase.from('rds_areas').insert(areasInsert);
     if (errAreas) {
       console.error('❌ Erro ao inserir áreas:', errAreas);
-      // Rollback: deleta o RDS que já foi criado
       await supabase.from('rds_solicitacoes').delete().eq('id', rds.id);
       throw new Error(`Erro nas áreas: ${errAreas.message}`);
     }
@@ -1490,43 +1518,37 @@ const { data: rds, error } = await supabase.from('rds_solicitacoes').insert({
   }
 });
 
-// Editar RDS
 app.put('/api/admin/rds/:id', verificarToken, async (req, res) => {
   const { id } = req.params;
   const { etapa_ensino, nome_aluno, turma, plataforma, observacao, areas } = req.body;
 
   try {
-    // Atualiza dados principais
     const { data: rds, error } = await supabase.from('rds_solicitacoes').update({
-  etapa_ensino,
-  nome_aluno: nome_aluno.trim().toUpperCase(),
-  turma: turma.trim().toUpperCase(),
-  plataforma: plataforma || null,
-  aguardando_analise: areas, // <-- Adicione aqui também se desejar
-  observacao: observacao || null
-}).eq('id', id).select().single();
+      etapa_ensino,
+      nome_aluno: nome_aluno.trim().toUpperCase(),
+      turma: turma.trim().toUpperCase(),
+      plataforma: plataforma || null,
+      aguardando_analise: areas,
+      observacao: observacao || null
+    }).eq('id', id).select().single();
 
     if (error) throw error;
 
-    // Sincroniza áreas: remove as que não estão na nova lista e adiciona as novas
     const { data: areasAtuais } = await supabase.from('rds_areas').select('id, area, status').eq('rds_id', id);
     const areasAtuaisMap = Object.fromEntries((areasAtuais || []).map(a => [a.area, a]));
 
-    // Remove áreas que saíram
     for (const areaAtual of areasAtuais || []) {
       if (!areas.includes(areaAtual.area)) {
         await supabase.from('rds_areas').delete().eq('id', areaAtual.id);
       }
     }
 
-    // Adiciona novas áreas
     for (const area of areas) {
       if (!areasAtuaisMap[area]) {
         await supabase.from('rds_areas').insert({ rds_id: id, area, status: 'pendente' });
       }
     }
 
-    // Recalcula status geral
     await atualizarStatusGeralRDS(id);
 
     return res.json({ rds, mensagem: 'RDS atualizado!' });
@@ -1536,7 +1558,6 @@ app.put('/api/admin/rds/:id', verificarToken, async (req, res) => {
   }
 });
 
-// Aceita tanto POST quanto PATCH para evitar qualquer bloqueio de CORS
 app.post('/api/admin/rds/area/:area_id/baixa', verificarToken, async (req, res) => {
   const { area_id } = req.params;
   const { observacao } = req.body;
@@ -1545,14 +1566,12 @@ app.post('/api/admin/rds/area/:area_id/baixa', verificarToken, async (req, res) 
     const token = req.headers.authorization?.split(' ')[1];
     const coordId = token.split('_')[1];
 
-    // 1. Verifica quem está fazendo a requisição
     const { data: usuario } = await supabase
       .from('coordenadores')
       .select('papel, area')
       .eq('id', coordId)
       .single();
 
-    // 2. Verifica qual é a área do RDS que está recebendo baixa
     const { data: areaAlvo, error: errBusca } = await supabase
       .from('rds_areas')
       .select('area, rds_id')
@@ -1563,12 +1582,10 @@ app.post('/api/admin/rds/area/:area_id/baixa', verificarToken, async (req, res) 
       return res.status(404).json({ erro: 'Área do RDS não encontrada.' });
     }
 
-    // 3. Bloqueia se for professor tentando dar baixa em área diferente da sua
     if (usuario && usuario.papel === 'professor' && usuario.area !== areaAlvo.area) {
       return res.status(403).json({ erro: 'Você não tem permissão para dar baixa nesta área.' });
     }
 
-    // 4. Realiza a baixa normalmente
     const { data: area, error } = await supabase.from('rds_areas').update({
       status: 'concluido',
       analisado_por: coordId,
@@ -1588,13 +1605,11 @@ app.post('/api/admin/rds/area/:area_id/baixa', verificarToken, async (req, res) 
   }
 });
 
-// Excluir RDS
 app.delete('/api/admin/rds/:id', verificarToken, async (req, res) => {
   const { id } = req.params;
   console.log('🗑️ DELETE /api/admin/rds - ID:', id);
 
   try {
-    // 1. Remove primeiro as áreas vinculadas (evita erro de Foreign Key)
     const { error: errAreas } = await supabase
       .from('rds_areas')
       .delete()
@@ -1605,7 +1620,6 @@ app.delete('/api/admin/rds/:id', verificarToken, async (req, res) => {
       throw new Error(errAreas.message);
     }
 
-    // 2. Remove o registro RDS principal
     const { error } = await supabase
       .from('rds_solicitacoes')
       .delete()
@@ -1624,7 +1638,6 @@ app.delete('/api/admin/rds/:id', verificarToken, async (req, res) => {
   }
 });
 
-// Função auxiliar: recalcula status geral baseado nas áreas
 async function atualizarStatusGeralRDS(rdsId) {
   const { data: areas } = await supabase.from('rds_areas').select('status').eq('rds_id', rdsId);
   if (!areas || areas.length === 0) return;
