@@ -1243,7 +1243,6 @@ app.get('/api/admin/oficinas/:id', verificarToken, async (req, res) => {
 
 app.post('/api/admin/oficinas', verificarToken, async (req, res) => {
   const { id, data_hora, segmento, competencia, habilidades, tema, objetivos, metodologia, recursos, avaliacao, fotos, alunos_notas } = req.body;
-  area: req.body.area || (req.body.alunos_notas?.[0]?.area) || null
   try {
     const token = req.headers.authorization?.split(' ')[1];
     const coordId = token.split('_')[1];
@@ -1271,6 +1270,40 @@ app.post('/api/admin/oficinas', verificarToken, async (req, res) => {
   } catch (err) {
     console.error('Erro ao salvar oficina:', err);
     return res.status(500).json({ erro: 'Erro ao salvar oficina' });
+  }
+});
+
+// ROTA PARA DELETAR OFICINA (APENAS COORDENADOR)
+app.delete('/api/admin/oficinas/:id', verificarToken, async (req, res) => {
+  try {
+    const token = req.headers.authorization?.split(' ')[1];
+    const coordId = token.split('_')[1];
+    const { data: coord } = await supabase.from('coordenadores').select('papel').eq('id', coordId).single();
+
+    if (!coord || coord.papel !== 'coordenador') {
+      return res.status(403).json({ erro: 'Apenas coordenadores podem deletar oficinas.' });
+    }
+
+    const oficinaId = req.params.id;
+
+    // 1. Remove os registros vinculados na tabela oficinas_presenciais
+    const { error: errPresenciais } = await supabase
+      .from('oficinas_presenciais')
+      .delete()
+      .eq('oficina_id', oficinaId);
+    if (errPresenciais) throw errPresenciais;
+
+    // 2. Remove a oficina da tabela oficinas
+    const { error: errOficina } = await supabase
+      .from('oficinas')
+      .delete()
+      .eq('id', oficinaId);
+    if (errOficina) throw errOficina;
+
+    return res.json({ mensagem: 'Oficina deletada com sucesso!' });
+  } catch (err) {
+    console.error('Erro ao deletar oficina:', err);
+    return res.status(500).json({ erro: 'Erro ao deletar oficina' });
   }
 });
 
