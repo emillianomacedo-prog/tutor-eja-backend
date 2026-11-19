@@ -318,59 +318,50 @@ app.put('/api/admin/alterar-senha', verificarToken, async (req, res) => {
   }
 });
 // =====================================================================
-// VARREDURA COMPLETA E PROGRESSO RETROATIVO DOS ALUNOS
+// VARREDURA COMPLETA E PROGRESSO RETROATIVO DOS ALUNOS (CALIBRADA)
 // =====================================================================
 app.get('/api/admin/alunos/progresso', verificarToken, async (req, res) => {
   try {
-    // 1. Busca matrículas, catálogo, dispensadas, murais e postagens
+    // Função para normalizar segmento (ex: "Ensino Médio", "ensino_medio", "EM" -> padrão comparável)
+    const normSeg = (s) => {
+      const t = String(s || '')
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/[^a-z0-9]/g, '');
+      if (t.includes('medio') || t === 'em') return 'medio';
+      if (t.includes('fundamental') || t === 'ef') return 'fundamental';
+      return t;
+    };
+
     const [
       { data: matriculas, error: errMat },
       { data: catalogo },
       { data: dispensadas },
       { data: muraisAtivos },
       { data: postagensMurais },
-      { data: oficinasPresenciais }
+      { data: oficinasPresenciais },
+      { data: respostasAtividades, error: errResp }
     ] = await Promise.all([
-      supabase.from('matriculas_estudos').select('id, aluno_id, segmento, status'),
-      supabase.from('habilidades_catalogo').select('habilidade_codigo, segmento, area'),
-      supabase.from('habilidades_dispensadas').select('matricula_id, habilidade_codigo'),
-      supabase.from('murais').select('id, segmento, area').eq('ativo', true),
-      supabase.from('postagens_murais').select('aluno_id, mural_id, status, nota_ia'),
-      supabase.from('oficinas_presenciais').select('aluno_id, matricula_id, competencia, nota')
+      supabase.from('matriculas_estudos').select('id, aluno_id, segmento, status').limit(10000),
+      supabase.from('habilidades_catalogo').select('habilidade_codigo, segmento, area').limit(10000),
+      supabase.from('habilidades_dispensadas').select('matricula_id, habilidade_codigo').limit(10000),
+      supabase.from('murais').select('id, segmento, area').eq('ativo', true).limit(10000),
+      supabase.from('postagens_murais').select('aluno_id, mural_id, status, nota_ia').limit(10000),
+      supabase.from('oficinas_presenciais').select('aluno_id, matricula_id, competencia, nota').limit(10000),
+      supabase
+        .from('respostas_atividades')
+        .select(`
+          id, aluno_id, status, nota, tentativas,
+          atividades ( tipo, competencia, area, habilidade_codigo, segmento )
+        `)
+        .limit(20000)
     ]);
 
     if (errMat) throw errMat;
+    if (errResp) throw errResp;
 
-// 2. Busca todas as atividades para mapear atividade_id -> habilidade_codigo sem depender de FK no Supabase
-    const { data: todasAtividades } = await supabase
-      .from('atividades')
-      .select('id, habilidade_codigo, competencia, segmento, area');
-
-    const mapaAtividades = {};
-    (todasAtividades || []).forEach(a => {
-      mapaAtividades[String(a.id)] = a;
-    });
-
-    // Busca respostas sem join (evita falha silenciosa por nome de Foreign Key)
-    let tabelaRespostasUsada = null;
-    let respostasAtividades = [];
-    for (const nomeTabela of [
-      'respostas',
-      'respostas_atividades',
-      'respostas_alunos',
-      'atividades_respostas',
-      'envios_atividades',
-      'submissoes'
-    ]) {
-      const r = await supabase.from(nomeTabela).select('*').limit(5000);
-      if (!r.error && Array.isArray(r.data)) {
-        tabelaRespostasUsada = nomeTabela;
-        respostasAtividades = r.data;
-        break;
-      }
-    }
-
-    // Indexa habilidades dispensadas por matricula_id
+    // 1. Indexa habilidades dispensadas por matricula_id
     const dispPorMat = {};
     (dispensadas || []).forEach(d => {
       const k = String(d.matricula_id);
@@ -378,37 +369,39 @@ app.get('/api/admin/alunos/progresso', verificarToken, async (req, res) => {
       dispPorMat[k].add(String(d.habilidade_codigo).trim());
     });
 
-    // Indexa habilidades concluídas pelo aluno (por matricula_id e aluno_id)
-    const habsFeitasPorChave = {};
-    (respostasAtividades || []).forEach(r => {
-      const st = String(r.status || '').toUpperCase();
-      const temNota = r.nota !== null && r.nota !== undefined;
-      const temResposta = Boolean(r.resposta || r.arquivo_url || r.texto_resposta || r.concluida);
+    // 2. Indexa habilidades concluídas por aluno_id (seguindo a mesma regra de /api/consultar-atividades)
+    const habsFeitasPorAluno = {};
+    const ativsConcluidasPorAluno = {};
 
-      if (
-        st === 'FINALIZADA' ||
-        st === 'CORRIGIDA' ||
-        st === 'AGUARDANDO_CORRECAO' ||
-        st === 'ENVIADA' ||
-        temNota ||
-        temResposta
-      ) {
-        const ativ = mapaAtividades[String(r.atividade_id)] || {};
-        const cod = ativ.habilidade_codigo || ativ.competencia || r.habilidade_codigo;
-        if (!cod) return;
+    (respostasAtividades || []).forEach(item => {
+      let statusFinal = String(item.status || '').toUpperCase();
+      if (item.atividades?.tipo === 'objetiva' && Number(item.tentativas) >= 2 && Number(item.nota) === 0) {
+        statusFinal = 'FINALIZADA';
+      }
 
-        [r.matricula_id, r.aluno_id, r.usuario_id].filter(Boolean).forEach(id => {
-          const k = String(id);
-          if (!habsFeitasPorChave[k]) habsFeitasPorChave[k] = new Set();
-          habsFeitasPorChave[k].add(String(cod).trim());
-        });
+      const temNota = item.nota !== null && item.nota !== undefined;
+      const concluida =
+        statusFinal === 'FINALIZADA' ||
+        statusFinal === 'CORRIGIDA' ||
+        statusFinal === 'AGUARDANDO_CORRECAO' ||
+        temNota;
+
+      if (!concluida || !item.aluno_id) return;
+
+      const alunoKey = String(item.aluno_id);
+      ativsConcluidasPorAluno[alunoKey] = (ativsConcluidasPorAluno[alunoKey] || 0) + 1;
+
+      const cod = item.atividades?.habilidade_codigo;
+      if (cod) {
+        if (!habsFeitasPorAluno[alunoKey]) habsFeitasPorAluno[alunoKey] = new Set();
+        habsFeitasPorAluno[alunoKey].add(String(cod).trim());
       }
     });
 
-    // Indexa murais concluídos por aluno_id
+    // 3. Indexa murais concluídos por aluno_id
     const muraisFeitosPorAluno = {};
     (postagensMurais || []).forEach(p => {
-      const st = (p.status || '').toUpperCase();
+      const st = String(p.status || '').toUpperCase();
       if (st === 'FINALIZADA' || (p.nota_ia !== null && p.nota_ia !== undefined)) {
         const k = String(p.aluno_id);
         if (!muraisFeitosPorAluno[k]) muraisFeitosPorAluno[k] = new Set();
@@ -416,7 +409,7 @@ app.get('/api/admin/alunos/progresso', verificarToken, async (req, res) => {
       }
     });
 
-    // Indexa oficinas presenciais (Coluna 1 do Boletim)
+    // 4. Indexa oficinas presenciais
     const oficinasPorChave = {};
     (oficinasPresenciais || []).forEach(o => {
       [o.matricula_id, o.aluno_id].filter(Boolean).forEach(id => {
@@ -430,26 +423,24 @@ app.get('/api/admin/alunos/progresso', verificarToken, async (req, res) => {
     (matriculas || []).forEach(mat => {
       const matId = String(mat.id);
       const alunoId = String(mat.aluno_id);
-      const seg = (mat.segmento || '').toLowerCase().trim();
+      const segNorm = normSeg(mat.segmento);
 
-      // Habilidades obrigatórias do segmento (descontando as dispensadas)
+      // Habilidades obrigatórias do segmento (descontando as dispensadas da matrícula)
       const setDisp = dispPorMat[matId] || new Set();
-      const habsSegmento = (catalogo || []).filter(c => (c.segmento || '').toLowerCase().trim() === seg);
+      const habsSegmento = (catalogo || []).filter(c => normSeg(c.segmento) === segNorm);
       const habsObrigatorias = habsSegmento.filter(c => !setDisp.has(String(c.habilidade_codigo).trim()));
       const setHabsObrig = new Set(habsObrigatorias.map(c => String(c.habilidade_codigo).trim()));
 
-      const setHabsFeitas = new Set([
-        ...(habsFeitasPorChave[matId] || []),
-        ...(habsFeitasPorChave[alunoId] || [])
-      ]);
+      const setHabsFeitas = habsFeitasPorAluno[alunoId] || new Set();
       const habsConcluidas = [...setHabsFeitas].filter(cod => setHabsObrig.has(cod)).length;
 
       // Murais obrigatórios do segmento (incluindo os gerais sem segmento)
-      const muraisObrig = (muraisAtivos || []).filter(m => !m.segmento || m.segmento.toLowerCase().trim() === seg);
+      const muraisObrig = (muraisAtivos || []).filter(m => !m.segmento || normSeg(m.segmento) === segNorm);
       const setMuraisObrig = new Set(muraisObrig.map(m => String(m.id)));
       const muraisConcluidos = [...(muraisFeitosPorAluno[alunoId] || [])].filter(id => setMuraisObrig.has(id)).length;
 
       const oficinasFeitas = oficinasPorChave[matId] || oficinasPorChave[alunoId] || 0;
+      const totalAtivsEnv = ativsConcluidasPorAluno[alunoId] || 0;
 
       const totalObrigatorio = habsObrigatorias.length + muraisObrig.length;
       const totalConcluido = habsConcluidas + muraisConcluidos;
@@ -459,20 +450,24 @@ app.get('/api/admin/alunos/progresso', verificarToken, async (req, res) => {
         : 0;
 
       const partes = [];
-      if (habsObrigatorias.length > 0) partes.push(`Atividades/Habilidades: ${habsConcluidas}/${habsObrigatorias.length}`);
+      if (habsObrigatorias.length > 0) {
+        partes.push(`Habilidades/Atividades: ${habsConcluidas}/${habsObrigatorias.length}`);
+      } else if (totalAtivsEnv > 0) {
+        partes.push(`Atividades concluídas: ${totalAtivsEnv}`);
+      }
       if (muraisObrig.length > 0) partes.push(`Murais: ${muraisConcluidos}/${muraisObrig.length}`);
       if (oficinasFeitas > 0) partes.push(`Oficinas: ${oficinasFeitas}`);
 
-      const infoProgresso = {
+      const info = {
         percentual,
         concluido: totalConcluido,
         total: totalObrigatorio,
         detalhe: partes.length > 0 ? partes.join(' · ') : 'Nenhuma atividade registrada ainda'
       };
 
-      // Salva por matricula_id e por aluno_id
-      resultado[matId] = infoProgresso;
-      resultado[alunoId] = infoProgresso;
+      // Grava nas duas chaves para o admin.html localizar independente de usar matricula_id ou aluno_id
+      resultado[matId] = info;
+      resultado[alunoId] = info;
     });
 
     return res.json(resultado);
