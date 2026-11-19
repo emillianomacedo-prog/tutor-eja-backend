@@ -317,7 +317,116 @@ app.put('/api/admin/alterar-senha', verificarToken, async (req, res) => {
     return res.status(500).json({ erro: 'Erro ao alterar senha: ' + err.message });
   }
 });
+// =====================================================================
+// PROGRESSO GERAL DOS ALUNOS (EXCLUSIVO PROFESSORES / COORDENAÇÃO)
+// =====================================================================
+app.get('/api/admin/alunos/progresso', verificarToken, async (req, res) => {
+  try {
+    // 1. Busca matrículas ativas, murais ativos e postagens finalizadas
+    const [
+      { data: matriculas, error: errMat },
+      { data: muraisAtivos },
+      { data: postagensFinalizadas }
+    ] = await Promise.all([
+      supabase.from('matriculas_estudos').select('id, aluno_id, segmento, status'),
+      supabase.from('murais').select('id, segmento, area').eq('ativo', true),
+      supabase.from('postagens_murais').select('aluno_id, mural_id, status, nota_ia').eq('status', 'FINALIZADA')
+    ]);
 
+    if (errMat) throw errMat;
+
+    // 2. Tenta buscar também trilhas/competências e avaliações caso existam no schema
+    let competencias = [];
+    let progressoComp = [];
+    let avaliacoes = [];
+    let submissoesAval = [];
+
+    try {
+      const r1 = await supabase.from('competencias').select('id, segmento');
+      if (!r1.error && r1.data) competencias = r1.data;
+    } catch (e) {}
+
+    try {
+      const r2 = await supabase.from('progresso_competencias').select('aluno_id, competencia_id, concluido, status');
+      if (!r2.error && r2.data) progressoComp = r2.data;
+    } catch (e) {}
+
+    try {
+      const r3 = await supabase.from('avaliacoes').select('id, segmento').eq('ativo', true);
+      if (!r3.error && r3.data) avaliacoes = r3.data;
+    } catch (e) {}
+
+    try {
+      const r4 = await supabase.from('respostas_avaliacoes').select('aluno_id, avaliacao_id, status');
+      if (!r4.error && r4.data) submissoesAval = r4.data;
+    } catch (e) {}
+
+    // Agrupa concluídos por aluno_id
+    const muraisPorAluno = {};
+    (postagensFinalizadas || []).forEach(p => {
+      if (!muraisPorAluno[p.aluno_id]) muraisPorAluno[p.aluno_id] = new Set();
+      muraisPorAluno[p.aluno_id].add(String(p.mural_id));
+    });
+
+    const compPorAluno = {};
+    (progressoComp || []).forEach(c => {
+      if (c.concluido === true || c.status === 'CONCLUIDA' || c.status === 'FINALIZADA') {
+        if (!compPorAluno[c.aluno_id]) compPorAluno[c.aluno_id] = new Set();
+        compPorAluno[c.aluno_id].add(String(c.competencia_id));
+      }
+    });
+
+    const avalPorAluno = {};
+    (submissoesAval || []).forEach(a => {
+      if (!avalPorAluno[a.aluno_id]) avalPorAluno[a.aluno_id] = new Set();
+      avalPorAluno[a.aluno_id].add(String(a.avaliacao_id));
+    });
+
+    const resultado = {};
+
+    (matriculas || []).forEach(mat => {
+      const seg = (mat.segmento || '').toLowerCase().trim();
+
+      // Filtra itens obrigatórios da etapa do aluno (ou gerais sem segmento)
+      const muraisObrig = (muraisAtivos || []).filter(m => !m.segmento || m.segmento.toLowerCase().trim() === seg);
+      const compObrig = (competencias || []).filter(c => !c.segmento || c.segmento.toLowerCase().trim() === seg);
+      const avalObrig = (avaliacoes || []).filter(a => !a.segmento || a.segmento.toLowerCase().trim() === seg);
+
+      const idsMuraisObrig = new Set(muraisObrig.map(m => String(m.id)));
+      const idsCompObrig = new Set(compObrig.map(c => String(c.id)));
+      const idsAvalObrig = new Set(avalObrig.map(a => String(a.id)));
+
+      const muraisFeitos = [...(muraisPorAluno[mat.aluno_id] || [])].filter(id => idsMuraisObrig.has(id)).length;
+      const compFeitas = [...(compPorAluno[mat.aluno_id] || [])].filter(id => idsCompObrig.has(id)).length;
+      const avalFeitas = [...(avalPorAluno[mat.aluno_id] || [])].filter(id => idsAvalObrig.has(id)).length;
+
+      const totalObrigatorio = muraisObrig.length + compObrig.length + avalObrig.length;
+      const totalConcluido = muraisFeitos + compFeitas + avalFeitas;
+
+      const percentual = totalObrigatorio > 0
+        ? Math.min(100, Math.round((totalConcluido / totalObrigatorio) * 100))
+        : 0;
+
+      // Monta resumo detalhado para tooltip
+      const partes = [];
+      if (muraisObrig.length > 0) partes.push(`Murais: ${muraisFeitos}/${muraisObrig.length}`);
+      if (compObrig.length > 0) partes.push(`Trilhas: ${compFeitas}/${compObrig.length}`);
+      if (avalObrig.length > 0) partes.push(`Avaliações: ${avalFeitas}/${avalObrig.length}`);
+
+      resultado[mat.aluno_id] = {
+        percentual,
+        concluido: totalConcluido,
+        total: totalObrigatorio,
+        detalhe: partes.length > 0 ? partes.join(' · ') : 'Sem atividades obrigatórias cadastradas'
+      };
+    });
+
+    return res.json(resultado);
+  } catch (err) {
+    console.error('[admin/alunos/progresso GET]', err);
+    return res.status(500).json({ erro: 'Erro ao calcular progresso dos alunos' });
+  }
+});
 // =====================================================================
 // ATIVIDADES
 // =====================================================================
