@@ -1015,14 +1015,173 @@ app.get('/api/admin/alunos', verificarToken, async (req, res) => {
 });
 
 // =====================================================================
-// BUSCA ATIVA EM TEMPO REAL (5+ DIAS SEM ACESSO)
+// RÉGUA DE COMUNICAÇÃO – BUSCA ATIVA NOVA EJA SESI/PB (7 ETAPAS)
 // =====================================================================
+function gerarMensagemReguaBuscaAtiva({ nome, dias, dataUltimoAcesso, etapa }) {
+  const primeiroNome = (nome || 'Estudante').trim().split(' ')[0];
+  const dataStr = dataUltimoAcesso || 'data não registrada';
+
+  const etapas = {
+    1: {
+      etapa: 1,
+      titulo: '1º Contato · Acolhimento',
+      faixa: '5 a 6 dias sem acesso',
+      cor: '#0284c7',
+      assunto: 'Nova EJA SESI/PB – Sentimos sua falta! (1º Contato)',
+      texto: `Olá, ${primeiroNome}! 👋😊
+
+Sentimos sua falta na Nova EJA SESI! Identificamos que você está há *${dias} dias sem acessar a plataforma*.
+
+Está tudo bem por aí? Surgiu alguma dificuldade para continuar seus estudos?
+
+Lembre-se: estamos aqui para ajudar você nessa caminhada! Não precisa enfrentar nenhuma dificuldade sozinho(a).
+
+Que tal reservar um tempinho hoje para retomar seus estudos? Estamos torcendo por você! 📚💙`
+    },
+    2: {
+      etapa: 2,
+      titulo: '2º Contato · Acompanhamento Pedagógico',
+      faixa: '5 a 6 dias sem acesso (2º contato)',
+      cor: '#2563eb',
+      assunto: 'Nova EJA SESI/PB – Acompanhamento Pedagógico',
+      texto: `Olá, ${primeiroNome}! Tudo bem? 😊
+
+Já faz *${dias} dias* desde seu último acesso à plataforma, realizado em ${dataStr}.
+
+Estamos organizando o acompanhamento pedagógico dos nossos estudantes e gostaríamos de saber como está sua rotina de estudos.
+
+Sabemos que trabalho, família e outros compromissos podem dificultar a organização do tempo. Mas não deixe seus objetivos ficarem para depois!
+
+Conte conosco. Se precisar de orientação ou ajuda para retomar as atividades, é só nos chamar.
+
+*Vamos dar continuidade aos seus estudos?* 💙`
+    },
+    3: {
+      etapa: 3,
+      titulo: '3º Contato · Alerta de Risco de Evasão',
+      faixa: '7 a 10 dias sem acesso',
+      cor: '#d97706',
+      assunto: 'Nova EJA SESI/PB – Importante: Alerta de Frequência',
+      texto: `Olá, ${primeiroNome}! 👋
+
+Sentimos sua falta! Já são *${dias} dias sem acesso à Nova EJA SESI*, e nossa preocupação é que essa pausa acabe comprometendo seu progresso e sua certificação.
+
+Queremos entender o que está acontecendo. Você está enfrentando alguma dificuldade com a plataforma, falta de tempo ou algum outro problema?
+
+Não desista agora! Você já deu um passo importante ao iniciar essa jornada.
+
+Responda esta mensagem para conversarmos. Vamos encontrar uma maneira de ajudar você a continuar! 🤝📚`
+    },
+    4: {
+      etapa: 4,
+      titulo: '4º Contato · Risco Moderado de Evasão',
+      faixa: '11 a 15 dias sem acesso',
+      cor: '#ea580c',
+      assunto: 'Nova EJA SESI/PB – Queremos ajudar você a continuar!',
+      texto: `Olá, ${primeiroNome}!
+
+Estamos entrando em contato novamente porque já são *${dias} dias sem acesso à Nova EJA SESI*.
+
+Enviamos algumas mensagens nos últimos dias, mas ainda não conseguimos conversar com você. Gostaríamos muito de saber se aconteceu alguma coisa ou se está enfrentando alguma dificuldade que esteja impedindo sua continuidade nos estudos.
+
+Queremos reforçar uma coisa importante: *o seu sucesso também é o nosso sucesso!* Nossa equipe pedagógica e nossos professores estão aqui para orientar, acompanhar e ajudar você a superar os desafios dessa caminhada.
+
+Que tal fazer um pequeno esforço hoje? Acesse a plataforma, realize uma leitura ou uma atividade. Pequenos passos ajudam a recuperar o ritmo!
+
+Se precisar de ajuda, fale conosco. Não queremos que você perca essa oportunidade de conquistar sua certificação.
+
+Estamos esperando por você! 💙`
+    },
+    5: {
+      etapa: 5,
+      titulo: '5º Contato · Risco Elevado de Evasão',
+      faixa: '16 a 30 dias sem acesso',
+      cor: '#dc2626',
+      assunto: 'Nova EJA SESI/PB – Precisamos conversar sobre sua matrícula',
+      texto: `Olá, ${primeiroNome}!
+
+Precisamos conversar com você! Já são *${dias} dias sem acesso à plataforma da Nova EJA SESI*, e essa ausência prolongada está comprometendo o andamento dos seus estudos.
+
+Até o momento, não identificamos uma retomada das atividades e também não conseguimos compreender o motivo do seu afastamento.
+
+Queremos saber: você ainda deseja continuar o curso?
+
+Se a resposta for SIM, conte conosco! Podemos conversar sobre suas dificuldades e orientar você sobre como reorganizar sua rotina e retomar os estudos.
+
+Mas precisamos da sua participação e do seu compromisso para que a certificação seja possível.
+
+*Por favor, responda esta mensagem.* Mesmo que esteja enfrentando dificuldades, queremos ouvir você e tentar encontrar uma solução.
+
+Não deixe seu projeto de concluir os estudos pelo caminho! Estamos aqui para ajudar. 🤝`
+    },
+    6: {
+      etapa: 6,
+      titulo: '6º Contato · Confirmação de Interesse (Última Tentativa)',
+      faixa: '31 a 44 dias sem acesso',
+      cor: '#b91c1c',
+      assunto: 'Nova EJA SESI/PB – Confirmação de Interesse na Matrícula',
+      texto: `Olá, ${primeiroNome}!
+
+Ao longo dos últimos dias, nossa equipe tem tentado contato para saber como você está e se precisa de ajuda para continuar seus estudos na Nova EJA SESI.
+
+Já são *${dias} dias sem acesso à plataforma*, e ainda não identificamos a retomada das atividades nem conseguimos obter um retorno que nos permita compreender sua situação.
+
+Precisamos confirmar uma informação importante:
+
+*Você ainda tem interesse em continuar na Nova EJA SESI?*
+
+Lembramos que o programa é gratuito e representa uma oportunidade de concluir seus estudos e ampliar suas possibilidades pessoais e profissionais.
+
+Se deseja continuar, teremos satisfação em ajudar você a retomar sua trajetória. Mas precisamos da sua participação e de um retorno para que possamos organizar esse acompanhamento.
+
+Caso não tenha mais interesse, pedimos que também nos informe.
+
+*Por favor, não deixe de responder.* Sua manifestação é muito importante para definirmos os próximos encaminhamentos relacionados à sua matrícula.
+
+Ainda dá tempo de retomar seus estudos! 💙
+
+Equipe Pedagógica – Nova EJA SESI/PB`
+    },
+    7: {
+      etapa: 7,
+      titulo: '7º Contato · Comunicação de Cancelamento da Matrícula',
+      faixa: '45+ dias sem acesso',
+      cor: '#7f1d1d',
+      assunto: 'Nova EJA SESI/PB – Comunicação de Cancelamento de Matrícula',
+      texto: `Olá, ${primeiroNome}!
+
+Estamos entrando em contato para informar que, após *45 dias ou mais sem acesso à plataforma da Nova EJA SESI/PB*, e mesmo após diversas tentativas de contato e acompanhamento por nossa equipe, não identificamos a retomada dos seus estudos.
+
+É importante destacar que *todas as mensagens enviadas anteriormente, inclusive esta comunicação, também foram encaminhadas para o endereço de e-mail informado por você na Ficha de Matrícula*, além dos contatos realizados por WhatsApp.
+
+Diante da ausência prolongada de participação e da falta de retorno às nossas tentativas de contato, *informamos o CANCELAMENTO da sua matrícula na Nova EJA SESI/PB*, conforme os procedimentos institucionais.
+
+Lamentamos que sua trajetória conosco esteja chegando a esse ponto. Sabemos que concluir os estudos é uma conquista importante e gostaríamos muito que você tivesse conseguido avançar nessa caminhada.
+
+Agradecemos por ter escolhido a Nova EJA SESI e desejamos muito sucesso em seus projetos pessoais e profissionais.
+
+*Equipe Pedagógica – Nova EJA SESI/PB* 💙`
+    }
+  };
+
+  return etapas[etapa] || etapas[1];
+}
+
+function calcularEtapaRegua(diasSemAcesso, tentativasNoCiclo = 0) {
+  if (diasSemAcesso >= 45) return 7;
+  if (diasSemAcesso >= 31) return 6;
+  if (diasSemAcesso >= 16) return 5;
+  if (diasSemAcesso >= 11) return 4;
+  if (diasSemAcesso >= 7) return 3;
+  // Faixa de 5 a 6 dias: se já houve 1 contato nesse ciclo, avança para o 2º contato
+  return tentativasNoCiclo >= 1 ? 2 : 1;
+}
+
 app.get('/api/admin/alertas', verificarToken, async (req, res) => {
   try {
     const agora = new Date();
-    const limiteData = new Date(agora.getFullYear(), agora.getMonth(), agora.getDate() - 5, 23, 59, 59);
+    const hojeZero = new Date(agora.getFullYear(), agora.getMonth(), agora.getDate());
 
-    // 1. Busca matrículas ativas e todos os campos da tabela alunos
     const { data: matriculas, error: errMat } = await supabase
       .from('matriculas_estudos')
       .select('*, alunos(*)')
@@ -1030,7 +1189,6 @@ app.get('/api/admin/alertas', verificarToken, async (req, res) => {
 
     if (errMat) throw errMat;
 
-    // 2. Busca alertas já existentes
     const { data: alertasExistentes } = await supabase
       .from('alertas_evasao')
       .select('*');
@@ -1051,63 +1209,100 @@ app.get('/api/admin/alertas', verificarToken, async (req, res) => {
       if (!refAcesso) continue;
 
       const dataUltimoAcesso = new Date(refAcesso);
-      if (isNaN(dataUltimoAcesso.getTime()) || dataUltimoAcesso > limiteData) continue;
+      if (isNaN(dataUltimoAcesso.getTime())) continue;
 
-      const diffMs = agora - dataUltimoAcesso;
-      const diasSemAcesso = Math.max(5, Math.floor(diffMs / (1000 * 60 * 60 * 24)));
+      const ultimoZero = new Date(dataUltimoAcesso.getFullYear(), dataUltimoAcesso.getMonth(), dataUltimoAcesso.getDate());
+      const diasSemAcesso = Math.floor((hojeZero - ultimoZero) / (1000 * 60 * 60 * 24));
+
+      if (diasSemAcesso < 5) continue;
+
       const dataFormatada = dataUltimoAcesso.toLocaleDateString('pt-BR');
-      const mensagemPadrao = `Aluno(a) sem acesso há ${diasSemAcesso} dias (último acesso em ${dataFormatada}).`;
-
       const alertaAtual = alertasPorMatricula[mat.id];
 
-      if (alertaAtual && alertaAtual.status === 'pendente') {
+      // Se o aluno voltou a acessar depois de um alerta antigo, reinicia o ciclo de contatos
+      const mesmoCiclo =
+        alertaAtual &&
+        alertaAtual.data_referencia_acesso &&
+        new Date(alertaAtual.data_referencia_acesso).toDateString() === dataUltimoAcesso.toDateString();
+
+      const tentativasNoCiclo = mesmoCiclo ? (Number(alertaAtual.tentativas_contato) || 0) : 0;
+      const etapaAtual = calcularEtapaRegua(diasSemAcesso, tentativasNoCiclo);
+      const regua = gerarMensagemReguaBuscaAtiva({
+        nome: mat.alunos.nome_completo,
+        dias: diasSemAcesso,
+        dataUltimoAcesso: dataFormatada,
+        etapa: etapaAtual
+      });
+
+      const resumoCurto = `Sem acesso há ${diasSemAcesso} dias (último acesso em ${dataFormatada}).`;
+
+      // Se o alerta foi encerrado manualmente no dia de hoje (exceto etapa 7), oculta até amanhã
+      if (alertaAtual && alertaAtual.status === 'resolvido' && mesmoCiclo && alertaAtual.resolvido_em) {
+        const dtRes = new Date(alertaAtual.resolvido_em);
+        if (dtRes.toDateString() === agora.toDateString() && etapaAtual < 7) {
+          continue;
+        }
+      }
+
+      if (alertaAtual) {
+        const precisaAtualizar =
+          alertaAtual.etapa_regua !== etapaAtual ||
+          alertaAtual.mensagem_original !== resumoCurto ||
+          !mesmoCiclo;
+
+        if (precisaAtualizar) {
+          const updatePayload = {
+            mensagem_original: resumoCurto,
+            etapa_regua: etapaAtual,
+            status: 'pendente',
+            data_referencia_acesso: dataUltimoAcesso.toISOString(),
+            ...(mesmoCiclo ? {} : {
+              tentativas_contato: 0,
+              email_enviado: false,
+              email_enviado_em: null,
+              whatsapp_enviado: false,
+              whatsapp_enviado_em: null
+            })
+          };
+          await supabase.from('alertas_evasao').update(updatePayload).eq('id', alertaAtual.id);
+          Object.assign(alertaAtual, updatePayload);
+        }
+
         listaFinal.push({
           ...alertaAtual,
-          mensagem_original: mensagemPadrao,
+          dias_sem_acesso: diasSemAcesso,
+          data_ultimo_acesso_br: dataFormatada,
+          regua,
           matriculas_estudos: mat
         });
       } else {
-        const dataConclusao = alertaAtual?.resolvido_em || alertaAtual?.updated_at;
-        const concluidoRecentemente =
-          alertaAtual &&
-          alertaAtual.status !== 'pendente' &&
-          dataConclusao &&
-          new Date(dataConclusao) > limiteData;
+        const novoPayload = {
+          matricula_id: mat.id,
+          mensagem_original: resumoCurto,
+          status: 'pendente',
+          etapa_regua: etapaAtual,
+          tentativas_contato: 0,
+          data_referencia_acesso: dataUltimoAcesso.toISOString()
+        };
 
-        if (!concluidoRecentemente) {
-          const { data: novoAlerta, error: errIns } = await supabase
-            .from('alertas_evasao')
-            .insert({
-              matricula_id: mat.id,
-              mensagem_original: mensagemPadrao,
-              status: 'pendente'
-            })
-            .select()
-            .single();
+        const { data: novoAlerta } = await supabase
+          .from('alertas_evasao')
+          .insert(novoPayload)
+          .select()
+          .single();
 
-          if (!errIns && novoAlerta) {
-            listaFinal.push({
-              ...novoAlerta,
-              matriculas_estudos: mat
-            });
-          } else {
-            listaFinal.push({
-              id: mat.id,
-              matricula_id: mat.id,
-              mensagem_original: mensagemPadrao,
-              status: 'pendente',
-              matriculas_estudos: mat
-            });
-          }
-        }
+        listaFinal.push({
+          ...(novoAlerta || { id: mat.id, ...novoPayload }),
+          dias_sem_acesso: diasSemAcesso,
+          data_ultimo_acesso_br: dataFormatada,
+          regua,
+          matriculas_estudos: mat
+        });
       }
     }
 
-    listaFinal.sort((a, b) => {
-      const da = new Date(a.matriculas_estudos?.ultimo_acesso || a.matriculas_estudos?.alunos?.ultimo_acesso || 0);
-      const db = new Date(b.matriculas_estudos?.ultimo_acesso || b.matriculas_estudos?.alunos?.ultimo_acesso || 0);
-      return da - db;
-    });
+    // Ordena do maior tempo sem acesso para o menor
+    listaFinal.sort((a, b) => (b.dias_sem_acesso || 0) - (a.dias_sem_acesso || 0));
 
     return res.json(listaFinal);
   } catch (err) {
@@ -1118,40 +1313,147 @@ app.get('/api/admin/alertas', verificarToken, async (req, res) => {
 
 app.post('/api/admin/alertas/:id/enviar', verificarToken, async (req, res) => {
   const { id } = req.params;
-  const { apenas_resolver } = req.body || {};
+  const { canal = 'email', apenas_resolver = false, cancelar_matricula = false } = req.body || {};
+
   try {
     const { data: alerta, error: errAlerta } = await supabase
-      .from('alertas_coordenacao')
-      .select('id, matricula_id')
+      .from('alertas_evasao')
+      .select('*, matriculas_estudos(*, alunos(*))')
       .eq('id', id)
       .single();
 
-    if (errAlerta || !alerta) throw new Error("Alerta não encontrado");
-
-    if (!apenas_resolver && alerta.matricula_id) {
-      const { data: mat } = await supabase
-        .from('matriculas_estudos')
-        .select('alunos (nome_completo, email)')
-        .eq('id', alerta.matricula_id)
-        .maybeSingle();
-
-      const aluno = mat?.alunos;
-      if (aluno && aluno.email && process.env.GMAIL_USER) {
-        try {
-          await transporter.sendMail({
-            from: `"Tutor Nova EJA - SESI" <${process.env.GMAIL_USER}>`,
-            to: aluno.email,
-            subject: `👋 Vamos retomar seus estudos na Nova EJA, ${aluno.nome_completo.split(' ')[0]}?`,
-            html: `<p>Olá, <strong>${aluno.nome_completo}</strong>! Sentimos sua falta na plataforma Tutor Nova EJA. Acesse para continuar suas leituras, atividades e murais!</p>`
-          });
-        } catch (e) { console.error("Erro ao reenviar e-mail:", e.message); }
-      }
+    if (errAlerta || !alerta) {
+      return res.status(404).json({ erro: 'Alerta não encontrado.' });
     }
 
-    await supabase.from('alertas_coordenacao').update({ status: 'resolvido' }).eq('id', id);
-    return res.json({ mensagem: "Alerta concluído." });
-  } catch (error) {
-    return res.status(500).json({ erro: "Erro ao atualizar alerta" });
+    const mat = alerta.matriculas_estudos;
+    const aluno = mat?.alunos;
+    const agora = new Date();
+    const hojeZero = new Date(agora.getFullYear(), agora.getMonth(), agora.getDate());
+
+    const refAcesso = mat?.ultimo_acesso || aluno?.ultimo_acesso || mat?.data_matricula || agora;
+    const dtUlt = new Date(refAcesso);
+    const ultZero = new Date(dtUlt.getFullYear(), dtUlt.getMonth(), dtUlt.getDate());
+    const diasSemAcesso = Math.max(5, Math.floor((hojeZero - ultZero) / (1000 * 60 * 60 * 24)));
+    const dataFormatada = dtUlt.toLocaleDateString('pt-BR');
+
+    const tentativasAtuais = Number(alerta.tentativas_contato) || 0;
+    const etapaAtual = alerta.etapa_regua || calcularEtapaRegua(diasSemAcesso, tentativasAtuais);
+    const regua = gerarMensagemReguaBuscaAtiva({
+      nome: aluno?.nome_completo,
+      dias: diasSemAcesso,
+      dataUltimoAcesso: dataFormatada,
+      etapa: etapaAtual
+    });
+
+    // 1. Se for envio de E-MAIL real (usa GMAIL_USER / GMAIL_APP_PASSWORD já configurados no server.js)
+    if (canal === 'email' && !apenas_resolver) {
+      const emailDestino = (aluno?.email || '').trim();
+      if (!emailDestino) {
+        return res.status(400).json({ erro: 'Este aluno não possui e-mail cadastrado na Ficha de Matrícula.' });
+      }
+
+      if (!process.env.GMAIL_USER || !process.env.GMAIL_APP_PASSWORD) {
+        return res.status(500).json({
+          erro: 'Variáveis GMAIL_USER / GMAIL_APP_PASSWORD não estão configuradas no Render.'
+        });
+      }
+
+      const htmlBody = `
+        <div style="font-family: Arial, sans-serif; max-width: 620px; margin: 0 auto; border: 1px solid #e2e8f0; border-radius: 10px; overflow: hidden;">
+          <div style="background: #003b73; color: #ffffff; padding: 18px 24px;">
+            <h2 style="margin: 0; font-size: 18px;">Nova EJA SESI/PB · Acompanhamento Pedagógico</h2>
+            <p style="margin: 4px 0 0 0; font-size: 12px; opacity: 0.85;">${regua.titulo}</p>
+          </div>
+          <div style="padding: 24px; color: #1e293b; font-size: 15px; line-height: 1.7;">
+            ${regua.texto
+              .replace(/\*(.*?)\*/g, '<strong>$1</strong>')
+              .replace(/\n/g, '<br>')}
+          </div>
+          <div style="background: #f8fafc; padding: 14px 24px; border-top: 1px solid #e2e8f0; font-size: 12px; color: #64748b;">
+            Mensagem institucional enviada pela Equipe Pedagógica – Nova EJA SESI/PB.
+          </div>
+        </div>
+      `;
+
+      const info = await transporter.sendMail({
+        from: `"Nova EJA SESI/PB" <${process.env.GMAIL_USER}>`,
+        to: emailDestino,
+        subject: regua.assunto,
+        text: regua.texto.replace(/\*/g, ''),
+        html: htmlBody
+      });
+
+      const novasTentativas = tentativasAtuais + 1;
+      await supabase
+        .from('alertas_evasao')
+        .update({
+          tentativas_contato: novasTentativas,
+          email_enviado: true,
+          email_enviado_em: agora.toISOString(),
+          email_destinatario: emailDestino
+        })
+        .eq('id', id);
+
+      return res.json({
+        sucesso: true,
+        mensagem: `E-mail (${regua.titulo}) enviado com sucesso para ${emailDestino}!`,
+        messageId: info.messageId,
+        destinatario: emailDestino
+      });
+    }
+
+    // 2. Se for registro de clique no WhatsApp
+    if (canal === 'whatsapp') {
+      const novasTentativas = tentativasAtuais + 1;
+      await supabase
+        .from('alertas_evasao')
+        .update({
+          tentativas_contato: novasTentativas,
+          whatsapp_enviado: true,
+          whatsapp_enviado_em: agora.toISOString()
+        })
+        .eq('id', id);
+
+      return res.json({ sucesso: true, mensagem: 'Contato via WhatsApp registrado na régua.' });
+    }
+
+    // 3. Se for Etapa 7 (45+ dias) com confirmação de CANCELAMENTO DA MATRÍCULA no banco
+    if (cancelar_matricula && mat?.id) {
+      const { error: errCancel } = await supabase
+        .from('matriculas_estudos')
+        .update({ status: 'cancelada' })
+        .eq('id', mat.id);
+
+      if (errCancel) throw errCancel;
+
+      await supabase
+        .from('alertas_evasao')
+        .update({
+          status: 'cancelado',
+          resolvido_em: agora.toISOString()
+        })
+        .eq('id', id);
+
+      return res.json({
+        sucesso: true,
+        mensagem: `Matrícula de ${aluno?.nome_completo || 'Aluno'} alterada para CANCELADA no banco de dados.`
+      });
+    }
+
+    // 4. Concluir/ocultar alerta temporariamente no dia
+    await supabase
+      .from('alertas_evasao')
+      .update({
+        status: 'resolvido',
+        resolvido_em: agora.toISOString()
+      })
+      .eq('id', id);
+
+    return res.json({ sucesso: true, mensagem: 'Alerta concluído.' });
+  } catch (err) {
+    console.error('[admin/alertas/:id/enviar POST]', err);
+    return res.status(500).json({ erro: 'Falha ao processar Busca Ativa: ' + err.message });
   }
 });
 
