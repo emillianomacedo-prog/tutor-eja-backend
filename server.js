@@ -1022,23 +1022,15 @@ app.get('/api/admin/alertas', verificarToken, async (req, res) => {
     const agora = new Date();
     const limiteData = new Date(agora.getFullYear(), agora.getMonth(), agora.getDate() - 5, 23, 59, 59);
 
-    // 1. Busca matrículas ativas com ultimo_acesso na tabela alunos
+    // 1. Busca matrículas ativas e todos os campos da tabela alunos
     const { data: matriculas, error: errMat } = await supabase
       .from('matriculas_estudos')
-      .select(`
-        id,
-        aluno_id,
-        segmento,
-        turma,
-        status,
-        created_at,
-        alunos ( id, nome_completo, cpf, email, telefone_whatsapp, ultimo_acesso, created_at )
-      `)
+      .select('*, alunos(*)')
       .eq('status', 'ativa');
 
     if (errMat) throw errMat;
 
-    // 2. Busca alertas já existentes (sem quebrar se a tabela tiver estrutura diferente)
+    // 2. Busca alertas já existentes
     const { data: alertasExistentes } = await supabase
       .from('alertas_evasao')
       .select('*');
@@ -1055,11 +1047,11 @@ app.get('/api/admin/alertas', verificarToken, async (req, res) => {
     for (const mat of matriculas || []) {
       if (!mat.alunos) continue;
 
-      const refAcesso = mat.alunos.ultimo_acesso || mat.alunos.created_at || mat.created_at;
+      const refAcesso = mat.ultimo_acesso || mat.alunos.ultimo_acesso || mat.data_matricula;
       if (!refAcesso) continue;
 
       const dataUltimoAcesso = new Date(refAcesso);
-      if (dataUltimoAcesso > limiteData) continue;
+      if (isNaN(dataUltimoAcesso.getTime()) || dataUltimoAcesso > limiteData) continue;
 
       const diffMs = agora - dataUltimoAcesso;
       const diasSemAcesso = Math.max(5, Math.floor(diffMs / (1000 * 60 * 60 * 24)));
@@ -1112,8 +1104,8 @@ app.get('/api/admin/alertas', verificarToken, async (req, res) => {
     }
 
     listaFinal.sort((a, b) => {
-      const da = new Date(a.matriculas_estudos?.alunos?.ultimo_acesso || 0);
-      const db = new Date(b.matriculas_estudos?.alunos?.ultimo_acesso || 0);
+      const da = new Date(a.matriculas_estudos?.ultimo_acesso || a.matriculas_estudos?.alunos?.ultimo_acesso || 0);
+      const db = new Date(b.matriculas_estudos?.ultimo_acesso || b.matriculas_estudos?.alunos?.ultimo_acesso || 0);
       return da - db;
     });
 
