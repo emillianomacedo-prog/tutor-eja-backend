@@ -24,10 +24,90 @@ const transporter = nodemailer.createTransport({
     user: process.env.GMAIL_USER,
     pass: process.env.GMAIL_APP_PASSWORD
   },
-  connectionTimeout: 10000,
-  greetingTimeout: 10000,
-  socketTimeout: 15000
+  connectionTimeout: 8000,
+  greetingTimeout: 8000,
+  socketTimeout: 10000
 });
+
+// Envio de e-mail compatível com Render (prioriza API HTTPS 443: Brevo / Resend)
+async function enviarEmailInstitucional({ para, nomePara, assunto, texto, html }) {
+  const remetenteEmail = (process.env.EMAIL_FROM || process.env.GMAIL_USER || '').trim();
+  const remetenteNome = 'Nova EJA SESI/PB';
+
+  // 1. Brevo API (HTTPS porta 443 - funciona no Render Free com Gmail verificado)
+  if (process.env.BREVO_API_KEY) {
+    if (!remetenteEmail) {
+      throw new Error('Configure GMAIL_USER ou EMAIL_FROM no Render como e-mail remetente.');
+    }
+    const resp = await fetch('https://api.brevo.com/v3/smtp/email', {
+      method: 'POST',
+      headers: {
+        'accept': 'application/json',
+        'api-key': process.env.BREVO_API_KEY.trim(),
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        sender: { name: remetenteNome, email: remetenteEmail },
+        to: [{ email: para, name: nomePara || para }],
+        subject: assunto,
+        htmlContent: html,
+        textContent: texto
+      })
+    });
+
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      throw new Error(data.message || `Erro Brevo HTTP ${resp.status}`);
+    }
+    return { provider: 'brevo', messageId: data.messageId || 'enviado' };
+  }
+
+  // 2. Resend API (HTTPS porta 443)
+  if (process.env.RESEND_API_KEY) {
+    const fromResend = process.env.RESEND_FROM || 'Nova EJA SESI/PB <onboarding@resend.dev>';
+    const resp = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.RESEND_API_KEY.trim()}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        from: fromResend,
+        to: [para],
+        subject: assunto,
+        html,
+        text: texto
+      })
+    });
+
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      throw new Error(data.message || `Erro Resend HTTP ${resp.status}`);
+    }
+    return { provider: 'resend', messageId: data.id || 'enviado' };
+  }
+
+  // 3. Fallback SMTP (funciona fora do Render; no Render Free porta 465/587 é bloqueada)
+  if (process.env.GMAIL_USER && process.env.GMAIL_APP_PASSWORD) {
+    try {
+      const info = await transporter.sendMail({
+        from: `"${remetenteNome}" <${process.env.GMAIL_USER}>`,
+        to: para,
+        subject: assunto,
+        text: texto,
+        html
+      });
+      return { provider: 'smtp', messageId: info.messageId };
+    } catch (err) {
+      if (err.code === 'ETIMEDOUT' || String(err.message).includes('timeout')) {
+        throw new Error('O Render bloqueia portas SMTP (465/587). Adicione a variável BREVO_API_KEY (gratuita) no Render para enviar via HTTPS.');
+      }
+      throw err;
+    }
+  }
+
+  throw new Error('Nenhum serviço de e-mail configurado (adicione BREVO_API_KEY no Render).');
+}
 
 const NOTA_MINIMA = 60;
 const MAX_TENTATIVAS_ATIVIDADE = 2;
@@ -1346,12 +1426,6 @@ app.post('/api/admin/alertas/:id/enviar', verificarToken, async (req, res) => {
         return res.status(400).json({ erro: 'Este aluno não possui e-mail cadastrado na Ficha de Matrícula.' });
       }
 
-      if (!process.env.GMAIL_USER || !process.env.GMAIL_APP_PASSWORD) {
-        return res.status(500).json({
-          erro: 'Variáveis GMAIL_USER / GMAIL_APP_PASSWORD não estão configuradas no servidor.'
-        });
-      }
-
       const htmlBody = `
         <div style="font-family: Arial, sans-serif; max-width: 620px; margin: 0 auto; border: 1px solid #e2e8f0; border-radius: 10px; overflow: hidden;">
           <div style="background: #003b73; color: #ffffff; padding: 18px 24px;">
@@ -1369,11 +1443,11 @@ app.post('/api/admin/alertas/:id/enviar', verificarToken, async (req, res) => {
         </div>
       `;
 
-      const info = await transporter.sendMail({
-        from: `"Nova EJA SESI/PB" <${process.env.GMAIL_USER}>`,
-        to: emailDestino,
-        subject: regua.assunto,
-        text: regua.texto.replace(/\*/g, ''),
+      const envio = await enviarEmailInstitucional({
+        para: emailDestino,
+        nomePara: aluno?.nome_completo,
+        assunto: regua.assunto,
+        texto: regua.texto.replace(/\*/g, ''),
         html: htmlBody
       });
 
@@ -1391,7 +1465,8 @@ app.post('/api/admin/alertas/:id/enviar', verificarToken, async (req, res) => {
       return res.json({
         sucesso: true,
         mensagem: `E-mail (${regua.titulo}) enviado com sucesso para ${emailDestino}!`,
-        messageId: info.messageId,
+        messageId: envio.messageId,
+        provider: envio.provider,
         destinatario: emailDestino
       });
     }
