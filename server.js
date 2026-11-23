@@ -1015,15 +1015,14 @@ app.get('/api/admin/alunos', verificarToken, async (req, res) => {
 });
 
 // =====================================================================
-// BUSCA ATIVA EM TEMPO REAL (5+ DIAS SEM ACESSO OU ATIVIDADE)
+// BUSCA ATIVA EM TEMPO REAL (5+ DIAS SEM ACESSO)
 // =====================================================================
 app.get('/api/admin/alertas', verificarToken, async (req, res) => {
   try {
     const agora = new Date();
-    // Zera horas para contar dias corridos (ex: 23/11 - 5 dias = 18/11)
     const limiteData = new Date(agora.getFullYear(), agora.getMonth(), agora.getDate() - 5, 23, 59, 59);
 
-    // 1. Busca todas as matrículas ativas com dados do aluno
+    // 1. Busca matrículas ativas com ultimo_acesso na tabela alunos
     const { data: matriculas, error: errMat } = await supabase
       .from('matriculas_estudos')
       .select(`
@@ -1032,23 +1031,21 @@ app.get('/api/admin/alertas', verificarToken, async (req, res) => {
         segmento,
         turma,
         status,
-        ultimo_acesso,
         created_at,
-        alunos ( id, nome_completo, cpf, email, telefone_whatsapp )
+        alunos ( id, nome_completo, cpf, email, telefone_whatsapp, ultimo_acesso, created_at )
       `)
       .eq('status', 'ativa');
 
     if (errMat) throw errMat;
 
-    // 2. Busca alertas já existentes na tabela alertas_evasao
+    // 2. Busca alertas já existentes (sem quebrar se a tabela tiver estrutura diferente)
     const { data: alertasExistentes } = await supabase
       .from('alertas_evasao')
-      .select('*')
-      .order('created_at', { ascending: false });
+      .select('*');
 
     const alertasPorMatricula = {};
     (alertasExistentes || []).forEach(a => {
-      if (!alertasPorMatricula[a.matricula_id]) {
+      if (a.matricula_id && !alertasPorMatricula[a.matricula_id]) {
         alertasPorMatricula[a.matricula_id] = a;
       }
     });
@@ -1058,11 +1055,11 @@ app.get('/api/admin/alertas', verificarToken, async (req, res) => {
     for (const mat of matriculas || []) {
       if (!mat.alunos) continue;
 
-      const refAcesso = mat.ultimo_acesso || mat.created_at;
+      const refAcesso = mat.alunos.ultimo_acesso || mat.alunos.created_at || mat.created_at;
       if (!refAcesso) continue;
 
       const dataUltimoAcesso = new Date(refAcesso);
-      if (dataUltimoAcesso > limiteData) continue; // Acessou nos últimos 4 dias
+      if (dataUltimoAcesso > limiteData) continue;
 
       const diffMs = agora - dataUltimoAcesso;
       const diasSemAcesso = Math.max(5, Math.floor(diffMs / (1000 * 60 * 60 * 24)));
@@ -1071,7 +1068,6 @@ app.get('/api/admin/alertas', verificarToken, async (req, res) => {
 
       const alertaAtual = alertasPorMatricula[mat.id];
 
-      // Se já existe um alerta PENDENTE, reaproveita e atualiza a contagem de dias
       if (alertaAtual && alertaAtual.status === 'pendente') {
         listaFinal.push({
           ...alertaAtual,
@@ -1079,7 +1075,6 @@ app.get('/api/admin/alertas', verificarToken, async (req, res) => {
           matriculas_estudos: mat
         });
       } else {
-        // Verifica se foi concluído recentemente (menos de 5 dias atrás) para não spammar no mesmo dia
         const dataConclusao = alertaAtual?.resolvido_em || alertaAtual?.updated_at;
         const concluidoRecentemente =
           alertaAtual &&
@@ -1088,7 +1083,6 @@ app.get('/api/admin/alertas', verificarToken, async (req, res) => {
           new Date(dataConclusao) > limiteData;
 
         if (!concluidoRecentemente) {
-          // Cria um novo registro pendente na tabela alertas_evasao
           const { data: novoAlerta, error: errIns } = await supabase
             .from('alertas_evasao')
             .insert({
@@ -1105,7 +1099,6 @@ app.get('/api/admin/alertas', verificarToken, async (req, res) => {
               matriculas_estudos: mat
             });
           } else {
-            // Fallback mesmo se a tabela tiver outro nome/schema
             listaFinal.push({
               id: mat.id,
               matricula_id: mat.id,
@@ -1118,17 +1111,16 @@ app.get('/api/admin/alertas', verificarToken, async (req, res) => {
       }
     }
 
-    // Ordena do maior tempo sem acesso para o menor
     listaFinal.sort((a, b) => {
-      const da = new Date(a.matriculas_estudos?.ultimo_acesso || 0);
-      const db = new Date(b.matriculas_estudos?.ultimo_acesso || 0);
+      const da = new Date(a.matriculas_estudos?.alunos?.ultimo_acesso || 0);
+      const db = new Date(b.matriculas_estudos?.alunos?.ultimo_acesso || 0);
       return da - db;
     });
 
     return res.json(listaFinal);
   } catch (err) {
     console.error('[admin/alertas GET]', err);
-    return res.status(500).json({ erro: 'Erro ao processar Busca Ativa' });
+    return res.status(500).json({ erro: 'Erro ao processar Busca Ativa: ' + err.message });
   }
 });
 
