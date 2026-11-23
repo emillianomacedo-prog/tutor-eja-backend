@@ -1854,22 +1854,16 @@ app.post('/api/admin/rds', verificarToken, async (req, res) => {
 
 app.put('/api/admin/rds/:id', verificarToken, async (req, res) => {
   const { id } = req.params;
-  // Dentro de POST /api/admin/rds e PUT /api/admin/rds/:id:
-const {
-  etapa_ensino,
-  nome_aluno,
-  turma,
-  plataforma,
-  aguardando_analise,
-  observacao,
-  areas,
-  arquivo_pdf_url,   // <--- NOVO
-  arquivo_pdf_nome   // <--- NOVO
-} = req.body;
-
-// No objeto enviado ao .insert({...}) ou .update({...}):
-arquivo_pdf_url: arquivo_pdf_url || null,
-arquivo_pdf_nome: arquivo_pdf_nome || null,
+  const {
+    etapa_ensino,
+    nome_aluno,
+    turma,
+    plataforma,
+    observacao,
+    areas,
+    arquivo_pdf_url,
+    arquivo_pdf_nome
+  } = req.body;
 
   try {
     const { data: rds, error } = await supabase.from('rds_solicitacoes').update({
@@ -1878,7 +1872,9 @@ arquivo_pdf_nome: arquivo_pdf_nome || null,
       turma: turma.trim().toUpperCase(),
       plataforma: plataforma || null,
       aguardando_analise: areas,
-      observacao: observacao || null
+      observacao: observacao || null,
+      arquivo_pdf_url: arquivo_pdf_url || null,
+      arquivo_pdf_nome: arquivo_pdf_nome || null
     }).eq('id', id).select().single();
 
     if (error) throw error;
