@@ -17,8 +17,16 @@ const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 const geminiKeys = process.env.GEMINI_KEYS.split(',').map(k => k.trim());
 
 const transporter = nodemailer.createTransport({
-  service: 'gmail',
-  auth: { user: process.env.GMAIL_USER, pass: process.env.GMAIL_APP_PASSWORD }
+  host: 'smtp.gmail.com',
+  port: 465,
+  secure: true,
+  auth: {
+    user: process.env.GMAIL_USER,
+    pass: process.env.GMAIL_APP_PASSWORD
+  },
+  connectionTimeout: 10000,
+  greetingTimeout: 10000,
+  socketTimeout: 15000
 });
 
 const NOTA_MINIMA = 60;
@@ -183,7 +191,6 @@ app.post('/api/login', async (req, res) => {
   } catch (e) { return res.status(500).json({ erro: "Erro interno." }); }
 });
 
-// 1. LOGIN ADMIN / PROFESSOR (aceita hashes $2a$, $2b$ e texto simples)
 app.post('/api/admin/login', async (req, res) => {
   const { email, password } = req.body;
   try {
@@ -220,7 +227,6 @@ app.post('/api/admin/login', async (req, res) => {
   }
 });
 
-// Middleware de autenticação administrativa (definido ANTES das rotas protegidas)
 function verificarToken(req, res, next) {
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith('Bearer prof_')) {
@@ -234,7 +240,6 @@ function verificarToken(req, res, next) {
   next();
 }
 
-// 2. PERFIL DO USUÁRIO LOGADO (para preencher e-mail no modal Editar Cadastro)
 app.get('/api/admin/meu-perfil', verificarToken, async (req, res) => {
   try {
     const token = req.headers.authorization?.split(' ')[1];
@@ -260,7 +265,6 @@ app.get('/api/admin/meu-perfil', verificarToken, async (req, res) => {
   }
 });
 
-// 3. ALTERAR SENHA (valida hash $2a$/$2b$, texto simples ou Sesi2026@ e salva criptografado)
 app.put('/api/admin/alterar-senha', verificarToken, async (req, res) => {
   const { senha_atual, nova_senha } = req.body;
 
@@ -318,8 +322,9 @@ app.put('/api/admin/alterar-senha', verificarToken, async (req, res) => {
     return res.status(500).json({ erro: 'Erro ao alterar senha: ' + err.message });
   }
 });
+
 // =====================================================================
-// VARREDURA COMPLETA E PROGRESSO RETROATIVO DOS ALUNOS (DEFINITIVA)
+// VARREDURA COMPLETA E PROGRESSO RETROATIVO DOS ALUNOS
 // =====================================================================
 app.get('/api/admin/alunos/progresso', verificarToken, async (req, res) => {
   try {
@@ -363,7 +368,6 @@ app.get('/api/admin/alunos/progresso', verificarToken, async (req, res) => {
     if (errMat) throw errMat;
     if (errResp) throw errResp;
 
-    // 1. Indexa habilidades dispensadas por matricula_id
     const dispPorMat = {};
     (dispensadas || []).forEach(d => {
       const k = String(d.matricula_id);
@@ -371,7 +375,6 @@ app.get('/api/admin/alunos/progresso', verificarToken, async (req, res) => {
       dispPorMat[k].add(String(d.habilidade_codigo).trim());
     });
 
-    // 2. Indexa habilidades e atividades concluídas por aluno_id
     const habsFeitasPorAluno = {};
     const ativIdsFeitosPorAluno = {};
 
@@ -405,7 +408,6 @@ app.get('/api/admin/alunos/progresso', verificarToken, async (req, res) => {
       }
     });
 
-    // 3. Indexa murais concluídos por aluno_id
     const muraisFeitosPorAluno = {};
     (postagensMurais || []).forEach(p => {
       const st = String(p.status || '').toUpperCase();
@@ -416,7 +418,6 @@ app.get('/api/admin/alunos/progresso', verificarToken, async (req, res) => {
       }
     });
 
-    // 4. Indexa oficinas presenciais
     const oficinasPorChave = {};
     (oficinasPresenciais || []).forEach(o => {
       [o.matricula_id, o.aluno_id].filter(Boolean).forEach(id => {
@@ -433,7 +434,6 @@ app.get('/api/admin/alunos/progresso', verificarToken, async (req, res) => {
       const segNorm = normSeg(mat.segmento);
       const setDisp = dispPorMat[matId] || new Set();
 
-      // Tenta obter universo de habilidades do catálogo (aceita segmento ou etapa)
       const habsCatSeg = (catalogo || []).filter(c => normSeg(c.segmento || c.etapa) === segNorm);
       const codigosUnicosCat = [...new Set(
         habsCatSeg
@@ -445,13 +445,11 @@ app.get('/api/admin/alunos/progresso', verificarToken, async (req, res) => {
       let concluidosItensAtiv = 0;
 
       if (codigosUnicosCat.length > 0) {
-        // Caso 1: Calcula por habilidades únicas do catálogo do segmento
         const setObrig = new Set(codigosUnicosCat);
         const setFeitas = habsFeitasPorAluno[alunoId] || new Set();
         totalItensAtiv = setObrig.size;
         concluidosItensAtiv = [...setFeitas].filter(cod => setObrig.has(cod)).length;
       } else {
-        // Caso 2 (Fallback automático): Calcula direto sobre as atividades cadastradas no segmento
         const ativsSeg = (todasAtividades || []).filter(a => {
           if (normSeg(a.segmento) !== segNorm) return false;
           if (a.habilidade_codigo && setDisp.has(String(a.habilidade_codigo).trim())) return false;
@@ -463,7 +461,6 @@ app.get('/api/admin/alunos/progresso', verificarToken, async (req, res) => {
         concluidosItensAtiv = [...setAtivFeitas].filter(id => setAtivObrig.has(id)).length;
       }
 
-      // Murais obrigatórios do segmento
       const muraisObrig = (muraisAtivos || []).filter(m => !m.segmento || normSeg(m.segmento) === segNorm);
       const setMuraisObrig = new Set(muraisObrig.map(m => String(m.id)));
       const muraisConcluidos = [...(muraisFeitosPorAluno[alunoId] || [])].filter(id => setMuraisObrig.has(id)).length;
@@ -499,6 +496,7 @@ app.get('/api/admin/alunos/progresso', verificarToken, async (req, res) => {
     return res.status(500).json({ erro: 'Erro ao varrer progresso dos alunos' });
   }
 });
+
 // =====================================================================
 // ATIVIDADES
 // =====================================================================
@@ -828,7 +826,6 @@ app.post('/api/chat', async (req, res) => {
     const { data: habCatalogo } = await queryCat.limit(1).single();
 
     if (!habCatalogo) return res.json({ resposta: "Habilidade não encontrada no catálogo." });
-    const descricaoHabilidade = habCatalogo.descricao;
     const areaHabilidade = habCatalogo.area;
 
     let queryUpdate = supabase.from('habilidades_a_desenvolver')
@@ -979,6 +976,7 @@ app.delete('/api/admin/excluir-aluno/:matricula_id', verificarToken, async (req,
     await supabase.from('habilidades_a_desenvolver').delete().eq('matricula_id', matricula_id);
     await supabase.from('mensagens_chat').delete().eq('matricula_id', matricula_id);
     await supabase.from('alertas_coordenacao').delete().eq('matricula_id', matricula_id);
+    await supabase.from('alertas_evasao').delete().eq('matricula_id', matricula_id);
     await supabase.from('relatorios_oficiais').delete().eq('matricula_id', matricula_id);
     await supabase.from('registros_qualitativos').delete().eq('matricula_id', matricula_id);
 
@@ -1173,7 +1171,6 @@ function calcularEtapaRegua(diasSemAcesso, tentativasNoCiclo = 0) {
   if (diasSemAcesso >= 16) return 5;
   if (diasSemAcesso >= 11) return 4;
   if (diasSemAcesso >= 7) return 3;
-  // Faixa de 5 a 6 dias: se já houve 1 contato nesse ciclo, avança para o 2º contato
   return tentativasNoCiclo >= 1 ? 2 : 1;
 }
 
@@ -1219,7 +1216,6 @@ app.get('/api/admin/alertas', verificarToken, async (req, res) => {
       const dataFormatada = dataUltimoAcesso.toLocaleDateString('pt-BR');
       const alertaAtual = alertasPorMatricula[mat.id];
 
-      // Se o aluno voltou a acessar depois de um alerta antigo, reinicia o ciclo de contatos
       const mesmoCiclo =
         alertaAtual &&
         alertaAtual.data_referencia_acesso &&
@@ -1236,7 +1232,6 @@ app.get('/api/admin/alertas', verificarToken, async (req, res) => {
 
       const resumoCurto = `Sem acesso há ${diasSemAcesso} dias (último acesso em ${dataFormatada}).`;
 
-      // Se o alerta foi encerrado manualmente no dia de hoje (exceto etapa 7), oculta até amanhã
       if (alertaAtual && alertaAtual.status === 'resolvido' && mesmoCiclo && alertaAtual.resolvido_em) {
         const dtRes = new Date(alertaAtual.resolvido_em);
         if (dtRes.toDateString() === agora.toDateString() && etapaAtual < 7) {
@@ -1301,7 +1296,6 @@ app.get('/api/admin/alertas', verificarToken, async (req, res) => {
       }
     }
 
-    // Ordena do maior tempo sem acesso para o menor
     listaFinal.sort((a, b) => (b.dias_sem_acesso || 0) - (a.dias_sem_acesso || 0));
 
     return res.json(listaFinal);
@@ -1346,7 +1340,6 @@ app.post('/api/admin/alertas/:id/enviar', verificarToken, async (req, res) => {
       etapa: etapaAtual
     });
 
-    // 1. Se for envio de E-MAIL real (usa GMAIL_USER / GMAIL_APP_PASSWORD já configurados no server.js)
     if (canal === 'email' && !apenas_resolver) {
       const emailDestino = (aluno?.email || '').trim();
       if (!emailDestino) {
@@ -1355,7 +1348,7 @@ app.post('/api/admin/alertas/:id/enviar', verificarToken, async (req, res) => {
 
       if (!process.env.GMAIL_USER || !process.env.GMAIL_APP_PASSWORD) {
         return res.status(500).json({
-          erro: 'Variáveis GMAIL_USER / GMAIL_APP_PASSWORD não estão configuradas no Render.'
+          erro: 'Variáveis GMAIL_USER / GMAIL_APP_PASSWORD não estão configuradas no servidor.'
         });
       }
 
@@ -1403,7 +1396,6 @@ app.post('/api/admin/alertas/:id/enviar', verificarToken, async (req, res) => {
       });
     }
 
-    // 2. Se for registro de clique no WhatsApp
     if (canal === 'whatsapp') {
       const novasTentativas = tentativasAtuais + 1;
       await supabase
@@ -1418,7 +1410,6 @@ app.post('/api/admin/alertas/:id/enviar', verificarToken, async (req, res) => {
       return res.json({ sucesso: true, mensagem: 'Contato via WhatsApp registrado na régua.' });
     }
 
-    // 3. Se for Etapa 7 (45+ dias) com confirmação de CANCELAMENTO DA MATRÍCULA no banco
     if (cancelar_matricula && mat?.id) {
       const { error: errCancel } = await supabase
         .from('matriculas_estudos')
@@ -1441,7 +1432,6 @@ app.post('/api/admin/alertas/:id/enviar', verificarToken, async (req, res) => {
       });
     }
 
-    // 4. Concluir/ocultar alerta temporariamente no dia
     await supabase
       .from('alertas_evasao')
       .update({
@@ -1474,7 +1464,11 @@ app.post('/api/finalizar-curso/:matricula_id', async (req, res) => {
     return res.json({ mensagem: "Curso concluído!", relatorio: sintese });
   } catch (error) { return res.status(500).json({ erro: "Erro" }); }
 });
-// 1. LISTAR MURAIS (usado em Consulta Mural e Relatórios)
+
+// =====================================================================
+// MURAIS (ADMIN)
+// =====================================================================
+
 app.get('/api/admin/murais', verificarToken, async (req, res) => {
   try {
     const token = req.headers.authorization?.split(' ')[1];
@@ -1498,7 +1492,7 @@ app.get('/api/admin/murais', verificarToken, async (req, res) => {
     return res.status(500).json({ erro: 'Erro ao listar murais' });
   }
 });
-// 1. LISTAR RESPOSTAS / POSTAGENS PENDENTES DE VALIDAÇÃO DE UM MURAL ESPECÍFICO
+
 app.get('/api/admin/murais/:id/respostas', verificarToken, async (req, res) => {
   try {
     const token = req.headers.authorization?.split(' ')[1];
@@ -1523,7 +1517,6 @@ app.get('/api/admin/murais/:id/respostas', verificarToken, async (req, res) => {
       return res.status(403).json({ erro: 'Acesso negado: mural de outra área do conhecimento.' });
     }
 
-    // Busca postagens que já possuem texto enviado pelo aluno
     const { data: postagens, error } = await supabase
       .from('postagens_murais')
       .select('id, mural_id, aluno_id, texto, nota_ia, feedback_ia, status, tentativas, submetido_em, avaliado_em')
@@ -1534,7 +1527,6 @@ app.get('/api/admin/murais/:id/respostas', verificarToken, async (req, res) => {
     if (error) throw error;
     if (!postagens || postagens.length === 0) return res.json([]);
 
-    // Mantém apenas as respostas que ainda não foram validadas (nem contestadas, nem concordadas)
     const pendentes = postagens.filter(p => {
       const fb = p.feedback_ia || '';
       return !fb.includes('[NOTA CONTESTADA PELO PROFESSOR]') && !fb.includes('[AVALIAÇÃO VALIDADA PELO PROFESSOR]');
@@ -1582,7 +1574,6 @@ app.get('/api/admin/murais/:id/respostas', verificarToken, async (req, res) => {
   }
 });
 
-// 2. CONCORDAR COM A AVALIAÇÃO DO TUTOR IA (DÁ BAIXA NO RELATÓRIO)
 app.put('/api/admin/murais/respostas/:respostaId/concordar', verificarToken, async (req, res) => {
   try {
     const token = req.headers.authorization?.split(' ')[1];
@@ -1628,7 +1619,6 @@ app.put('/api/admin/murais/respostas/:respostaId/concordar', verificarToken, asy
   }
 });
 
-// 3. CONTESTAR / ALTERAR NOTA DO TUTOR IA NO MURAL (TAMBÉM DÁ BAIXA NO RELATÓRIO)
 app.put('/api/admin/murais/respostas/:respostaId/contestar', verificarToken, async (req, res) => {
   try {
     const { nota, motivo_contestacao } = req.body;
@@ -1648,7 +1638,6 @@ app.put('/api/admin/murais/respostas/:respostaId/contestar', verificarToken, asy
     const nomeAvaliador = coord?.nome || 'Professor/Coordenador';
     const dataHoje = new Date().toLocaleDateString('pt-BR');
 
-    // Remove eventual bloco de validação/contestação anterior para manter o histórico limpo
     const feedbackBase = (atual.feedback_ia || '')
       .split('\n\n[NOTA CONTESTADA PELO PROFESSOR]')[0]
       .split('\n\n[AVALIAÇÃO VALIDADA PELO PROFESSOR]')[0]
@@ -1668,7 +1657,6 @@ app.put('/api/admin/murais/respostas/:respostaId/contestar', verificarToken, asy
 
     if (errUpdate) throw errUpdate;
 
-    // Recalcula conclusão caso a nova nota aprove o aluno na competência
     if (atual.aluno_id) {
       try { await verificarConclusao(atual.aluno_id); } catch (e) {}
     }
@@ -1679,6 +1667,7 @@ app.put('/api/admin/murais/respostas/:respostaId/contestar', verificarToken, asy
     return res.status(500).json({ erro: 'Erro ao contestar nota do mural' });
   }
 });
+
 // =====================================================================
 // OFICINAS E CRONOGRAMA
 // =====================================================================
@@ -1822,7 +1811,6 @@ app.post('/api/admin/oficinas', verificarToken, async (req, res) => {
   }
 });
 
-// ROTA PARA DELETAR OFICINA (APENAS COORDENADOR)
 app.delete('/api/admin/oficinas/:id', verificarToken, async (req, res) => {
   try {
     const token = req.headers.authorization?.split(' ')[1];
@@ -1835,14 +1823,12 @@ app.delete('/api/admin/oficinas/:id', verificarToken, async (req, res) => {
 
     const oficinaId = req.params.id;
 
-    // 1. Remove os registros vinculados na tabela oficinas_presenciais
     const { error: errPresenciais } = await supabase
       .from('oficinas_presenciais')
       .delete()
       .eq('oficina_id', oficinaId);
     if (errPresenciais) throw errPresenciais;
 
-    // 2. Remove a oficina da tabela oficinas
     const { error: errOficina } = await supabase
       .from('oficinas')
       .delete()
@@ -2063,8 +2049,6 @@ app.post('/api/admin/rds', verificarToken, async (req, res) => {
     arquivo_pdf_nome
   } = req.body;
 
-  console.log('📥 POST /api/admin/rds - Payload recebido:', { etapa_ensino, nome_aluno, turma, plataforma, areas, arquivo_pdf_nome });
-
   if (!etapa_ensino || !nome_aluno || !turma || !areas || areas.length === 0) {
     return res.status(400).json({ erro: 'Campos obrigatórios: etapa, nome, turma e pelo menos 1 área' });
   }
@@ -2087,7 +2071,6 @@ app.post('/api/admin/rds', verificarToken, async (req, res) => {
     }).select().single();
 
     if (error) {
-      console.error('❌ Erro ao criar RDS:', error);
       throw new Error(`Erro no RDS principal: ${error.message}`);
     }
 
@@ -2099,12 +2082,10 @@ app.post('/api/admin/rds', verificarToken, async (req, res) => {
 
     const { error: errAreas } = await supabase.from('rds_areas').insert(areasInsert);
     if (errAreas) {
-      console.error('❌ Erro ao inserir áreas:', errAreas);
       await supabase.from('rds_solicitacoes').delete().eq('id', rds.id);
       throw new Error(`Erro nas áreas: ${errAreas.message}`);
     }
 
-    console.log('✅ RDS criado com sucesso:', rds.id);
     return res.status(201).json({ rds, mensagem: 'RDS cadastrado!' });
   } catch (err) {
     console.error('🚨 Erro ao criar RDS:', err.message);
@@ -2212,7 +2193,6 @@ app.post('/api/admin/rds/area/:area_id/baixa', verificarToken, async (req, res) 
 
 app.delete('/api/admin/rds/:id', verificarToken, async (req, res) => {
   const { id } = req.params;
-  console.log('🗑️ DELETE /api/admin/rds - ID:', id);
 
   try {
     const { error: errAreas } = await supabase
@@ -2221,7 +2201,6 @@ app.delete('/api/admin/rds/:id', verificarToken, async (req, res) => {
       .eq('rds_id', id);
 
     if (errAreas) {
-      console.error('❌ Erro ao excluir áreas do RDS:', errAreas);
       throw new Error(errAreas.message);
     }
 
@@ -2231,11 +2210,9 @@ app.delete('/api/admin/rds/:id', verificarToken, async (req, res) => {
       .eq('id', id);
 
     if (error) {
-      console.error('❌ Erro ao excluir RDS principal:', error);
       throw new Error(error.message);
     }
 
-    console.log('✅ RDS excluído com sucesso:', id);
     return res.json({ mensagem: 'RDS excluído com sucesso' });
   } catch (err) {
     console.error('🚨 Falha ao excluir RDS:', err.message);
