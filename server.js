@@ -9,7 +9,8 @@ const nodemailer = require('nodemailer');
 
 const app = express();
 app.use(cors());
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({ limit: '15mb' }));
+app.use(express.urlencoded({ limit: '15mb', extended: true }));
 
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
@@ -1791,7 +1792,22 @@ app.get('/api/admin/rds', verificarToken, async (req, res) => {
 });
 
 app.post('/api/admin/rds', verificarToken, async (req, res) => {
-  const { etapa_ensino, nome_aluno, turma, plataforma, observacao, areas } = req.body;
+  // Dentro de POST /api/admin/rds e PUT /api/admin/rds/:id:
+const {
+  etapa_ensino,
+  nome_aluno,
+  turma,
+  plataforma,
+  aguardando_analise,
+  observacao,
+  areas,
+  arquivo_pdf_url,   // <--- NOVO
+  arquivo_pdf_nome   // <--- NOVO
+} = req.body;
+
+// No objeto enviado ao .insert({...}) ou .update({...}):
+arquivo_pdf_url: arquivo_pdf_url || null,
+arquivo_pdf_nome: arquivo_pdf_nome || null,
 
   console.log('📥 POST /api/admin/rds - Payload recebido:', { etapa_ensino, nome_aluno, turma, plataforma, areas });
 
@@ -1842,7 +1858,22 @@ app.post('/api/admin/rds', verificarToken, async (req, res) => {
 
 app.put('/api/admin/rds/:id', verificarToken, async (req, res) => {
   const { id } = req.params;
-  const { etapa_ensino, nome_aluno, turma, plataforma, observacao, areas } = req.body;
+  // Dentro de POST /api/admin/rds e PUT /api/admin/rds/:id:
+const {
+  etapa_ensino,
+  nome_aluno,
+  turma,
+  plataforma,
+  aguardando_analise,
+  observacao,
+  areas,
+  arquivo_pdf_url,   // <--- NOVO
+  arquivo_pdf_nome   // <--- NOVO
+} = req.body;
+
+// No objeto enviado ao .insert({...}) ou .update({...}):
+arquivo_pdf_url: arquivo_pdf_url || null,
+arquivo_pdf_nome: arquivo_pdf_nome || null,
 
   try {
     const { data: rds, error } = await supabase.from('rds_solicitacoes').update({
