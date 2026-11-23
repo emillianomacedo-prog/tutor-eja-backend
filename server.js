@@ -1792,24 +1792,18 @@ app.get('/api/admin/rds', verificarToken, async (req, res) => {
 });
 
 app.post('/api/admin/rds', verificarToken, async (req, res) => {
-  // Dentro de POST /api/admin/rds e PUT /api/admin/rds/:id:
-const {
-  etapa_ensino,
-  nome_aluno,
-  turma,
-  plataforma,
-  aguardando_analise,
-  observacao,
-  areas,
-  arquivo_pdf_url,   // <--- NOVO
-  arquivo_pdf_nome   // <--- NOVO
-} = req.body;
+  const {
+    etapa_ensino,
+    nome_aluno,
+    turma,
+    plataforma,
+    observacao,
+    areas,
+    arquivo_pdf_url,
+    arquivo_pdf_nome
+  } = req.body;
 
-// No objeto enviado ao .insert({...}) ou .update({...}):
-arquivo_pdf_url: arquivo_pdf_url || null,
-arquivo_pdf_nome: arquivo_pdf_nome || null,
-
-  console.log('📥 POST /api/admin/rds - Payload recebido:', { etapa_ensino, nome_aluno, turma, plataforma, areas });
+  console.log('📥 POST /api/admin/rds - Payload recebido:', { etapa_ensino, nome_aluno, turma, plataforma, areas, arquivo_pdf_nome });
 
   if (!etapa_ensino || !nome_aluno || !turma || !areas || areas.length === 0) {
     return res.status(400).json({ erro: 'Campos obrigatórios: etapa, nome, turma e pelo menos 1 área' });
@@ -1826,6 +1820,8 @@ arquivo_pdf_nome: arquivo_pdf_nome || null,
       plataforma: plataforma || null,
       aguardando_analise: areas,
       observacao: observacao || null,
+      arquivo_pdf_url: arquivo_pdf_url || null,
+      arquivo_pdf_nome: arquivo_pdf_nome || null,
       criado_por: coordId,
       status_geral: 'pendente'
     }).select().single();
