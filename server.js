@@ -1015,146 +1015,120 @@ app.get('/api/admin/alunos', verificarToken, async (req, res) => {
 });
 
 // =====================================================================
-// BUSCA ATIVA (COMBATE À EVASÃO - 5 DIAS SEM LEITURA, MURAL OU ATIVIDADE)
+// BUSCA ATIVA EM TEMPO REAL (5+ DIAS SEM ACESSO OU ATIVIDADE)
 // =====================================================================
-
 app.get('/api/admin/alertas', verificarToken, async (req, res) => {
   try {
-    const CINCO_DIAS_MS = 5 * 24 * 60 * 60 * 1000;
-    const dataLimite = new Date(Date.now() - CINCO_DIAS_MS).toISOString();
+    const agora = new Date();
+    // Zera horas para contar dias corridos (ex: 23/11 - 5 dias = 18/11)
+    const limiteData = new Date(agora.getFullYear(), agora.getMonth(), agora.getDate() - 5, 23, 59, 59);
 
-    const { data: matriculasAtivas } = await supabase
+    // 1. Busca todas as matrículas ativas com dados do aluno
+    const { data: matriculas, error: errMat } = await supabase
       .from('matriculas_estudos')
-      .select('id, aluno_id, criado_em, alunos ( id, nome_completo, telefone_whatsapp, email )')
+      .select(`
+        id,
+        aluno_id,
+        segmento,
+        turma,
+        status,
+        ultimo_acesso,
+        created_at,
+        alunos ( id, nome_completo, cpf, email, telefone_whatsapp )
+      `)
       .eq('status', 'ativa');
 
-    const mapaMatriculas = new Map();
-    for (const m of matriculasAtivas || []) {
-      mapaMatriculas.set(m.id, m);
-    }
+    if (errMat) throw errMat;
 
-    for (const mat of matriculasAtivas || []) {
+    // 2. Busca alertas já existentes na tabela alertas_evasao
+    const { data: alertasExistentes } = await supabase
+      .from('alertas_evasao')
+      .select('*')
+      .order('created_at', { ascending: false });
+
+    const alertasPorMatricula = {};
+    (alertasExistentes || []).forEach(a => {
+      if (!alertasPorMatricula[a.matricula_id]) {
+        alertasPorMatricula[a.matricula_id] = a;
+      }
+    });
+
+    const listaFinal = [];
+
+    for (const mat of matriculas || []) {
       if (!mat.alunos) continue;
 
-      const { data: ultChat } = await supabase
-        .from('mensagens_chat')
-        .select('created_at')
-        .eq('matricula_id', mat.id)
-        .eq('remetente', 'aluno')
-        .order('created_at', { ascending: false })
-        .limit(1)
-        .maybeSingle();
+      const refAcesso = mat.ultimo_acesso || mat.created_at;
+      if (!refAcesso) continue;
 
-      const { data: ultAtiv } = await supabase
-        .from('respostas_atividades')
-        .select('created_at, submetido_em')
-        .eq('aluno_id', mat.aluno_id)
-        .order('created_at', { ascending: false })
-        .limit(1)
-        .maybeSingle();
+      const dataUltimoAcesso = new Date(refAcesso);
+      if (dataUltimoAcesso > limiteData) continue; // Acessou nos últimos 4 dias
 
-      const { data: ultMural } = await supabase
-        .from('postagens_murais')
-        .select('submetido_em, avaliado_em')
-        .eq('aluno_id', mat.aluno_id)
-        .order('submetido_em', { ascending: false })
-        .limit(1)
-        .maybeSingle();
+      const diffMs = agora - dataUltimoAcesso;
+      const diasSemAcesso = Math.max(5, Math.floor(diffMs / (1000 * 60 * 60 * 24)));
+      const dataFormatada = dataUltimoAcesso.toLocaleDateString('pt-BR');
+      const mensagemPadrao = `Aluno(a) sem acesso há ${diasSemAcesso} dias (último acesso em ${dataFormatada}).`;
 
-      const datasInteracao = [
-        ultChat?.created_at,
-        ultAtiv?.submetido_em || ultAtiv?.created_at,
-        ultMural?.submetido_em || ultMural?.avaliado_em,
-        mat.criado_em
-      ].filter(Boolean).map(d => new Date(d).getTime());
+      const alertaAtual = alertasPorMatricula[mat.id];
 
-      const ultimaInteracaoMs = datasInteracao.length > 0 ? Math.max(...datasInteracao) : 0;
-      const diasSemInteracao = Math.floor((Date.now() - ultimaInteracaoMs) / (24 * 60 * 60 * 1000));
+      // Se já existe um alerta PENDENTE, reaproveita e atualiza a contagem de dias
+      if (alertaAtual && alertaAtual.status === 'pendente') {
+        listaFinal.push({
+          ...alertaAtual,
+          mensagem_original: mensagemPadrao,
+          matriculas_estudos: mat
+        });
+      } else {
+        // Verifica se foi concluído recentemente (menos de 5 dias atrás) para não spammar no mesmo dia
+        const dataConclusao = alertaAtual?.resolvido_em || alertaAtual?.updated_at;
+        const concluidoRecentemente =
+          alertaAtual &&
+          alertaAtual.status !== 'pendente' &&
+          dataConclusao &&
+          new Date(dataConclusao) > limiteData;
 
-      if (diasSemInteracao >= 5) {
-        const { data: alertaRecente } = await supabase
-          .from('alertas_coordenacao')
-          .select('id')
-          .eq('matricula_id', mat.id)
-          .eq('tipo', 'inatividade')
-          .gte('criado_em', dataLimite)
-          .maybeSingle();
+        if (!concluidoRecentemente) {
+          // Cria um novo registro pendente na tabela alertas_evasao
+          const { data: novoAlerta, error: errIns } = await supabase
+            .from('alertas_evasao')
+            .insert({
+              matricula_id: mat.id,
+              mensagem_original: mensagemPadrao,
+              status: 'pendente'
+            })
+            .select()
+            .single();
 
-        if (!alertaRecente) {
-          const msgAlerta = `Aluno há ${diasSemInteracao} dias sem realizar leitura, atividade ou mural.`;
-          let emailDisparado = false;
-
-          if (mat.alunos.email && process.env.GMAIL_USER && process.env.GMAIL_APP_PASSWORD) {
-            try {
-              await transporter.sendMail({
-                from: `"Tutor Nova EJA - SESI" <${process.env.GMAIL_USER}>`,
-                to: mat.alunos.email,
-                subject: `👋 Sentimos sua falta na Nova EJA, ${mat.alunos.nome_completo.split(' ')[0]}!`,
-                html: `
-                  <div style="font-family: Arial, sans-serif; color: #1e293b; max-width: 600px; margin: 0 auto; border: 1px solid #e2e8f0; border-radius: 10px; overflow: hidden;">
-                    <div style="background: #0057b8; color: white; padding: 20px; text-align: center;">
-                      <h2 style="margin: 0;">Tutor IA · Nova EJA SESI</h2>
-                    </div>
-                    <div style="padding: 24px; line-height: 1.6;">
-                      <p>Olá, <strong>${mat.alunos.nome_completo}</strong>! 👋</p>
-                      <p>Notamos que faz <strong>${diasSemInteracao} dias</strong> que você não realiza uma leitura de livro, atividade ou participação no mural na plataforma.</p>
-                      <p>Sabemos que a rotina é corrida, mas cada pequena etapa concluída deixa você mais perto da sua certificação!</p>
-                      <p style="text-align: center; margin: 30px 0;">
-                        <a href="https://tutor-nova-eja.vercel.app" style="background: #16a34a; color: white; padding: 12px 24px; text-decoration: none; border-radius: 8px; font-weight: bold;">Acessar Minha Plataforma</a>
-                      </p>
-                      <p style="font-size: 13px; color: #64748b;">Qualquer dificuldade, conte com a nossa equipe pedagógica!</p>
-                    </div>
-                  </div>
-                `
-              });
-              emailDisparado = true;
-            } catch (errMail) {
-              console.error(`⚠️ Falha ao enviar e-mail para ${mat.alunos.email}:`, errMail.message);
-            }
+          if (!errIns && novoAlerta) {
+            listaFinal.push({
+              ...novoAlerta,
+              matriculas_estudos: mat
+            });
+          } else {
+            // Fallback mesmo se a tabela tiver outro nome/schema
+            listaFinal.push({
+              id: mat.id,
+              matricula_id: mat.id,
+              mensagem_original: mensagemPadrao,
+              status: 'pendente',
+              matriculas_estudos: mat
+            });
           }
-
-          await supabase.from('alertas_coordenacao').insert({
-            matricula_id: mat.id,
-            tipo: 'inatividade',
-            mensagem_original: emailDisparado ? `${msgAlerta} (E-mail enviado ✅)` : msgAlerta,
-            status: 'pendente'
-          });
         }
       }
     }
 
-    const { data: alertas, error } = await supabase
-      .from('alertas_coordenacao')
-      .select('id, matricula_id, tipo, mensagem_original, criado_em')
-      .eq('status', 'pendente')
-      .eq('tipo', 'inatividade')
-      .order('criado_em', { ascending: false });
+    // Ordena do maior tempo sem acesso para o menor
+    listaFinal.sort((a, b) => {
+      const da = new Date(a.matriculas_estudos?.ultimo_acesso || 0);
+      const db = new Date(b.matriculas_estudos?.ultimo_acesso || 0);
+      return da - db;
+    });
 
-    if (error) throw error;
-
-    const alertasCompletos = [];
-    for (const alerta of alertas || []) {
-      let matInfo = mapaMatriculas.get(alerta.matricula_id);
-      if (!matInfo && alerta.matricula_id) {
-        const { data: mExtra } = await supabase
-          .from('matriculas_estudos')
-          .select('id, alunos ( nome_completo, telefone_whatsapp, email )')
-          .eq('id', alerta.matricula_id)
-          .maybeSingle();
-        matInfo = mExtra;
-      }
-      if (!matInfo || !matInfo.alunos) continue;
-
-      alertasCompletos.push({
-        ...alerta,
-        matriculas_estudos: { id: matInfo.id, alunos: matInfo.alunos }
-      });
-    }
-
-    return res.json(alertasCompletos);
-  } catch (error) {
-    console.error("Erro ao processar Busca Ativa:", error);
-    return res.status(500).json({ erro: "Erro ao processar Busca Ativa" });
+    return res.json(listaFinal);
+  } catch (err) {
+    console.error('[admin/alertas GET]', err);
+    return res.status(500).json({ erro: 'Erro ao processar Busca Ativa' });
   }
 });
 
