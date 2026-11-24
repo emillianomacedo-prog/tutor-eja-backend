@@ -1541,6 +1541,181 @@ app.post('/api/finalizar-curso/:matricula_id', async (req, res) => {
 });
 
 // =====================================================================
+// MURAIS (ALUNO E PERSONIFICAÇÃO)
+// =====================================================================
+
+app.get('/api/murais', async (req, res) => {
+  const { aluno_id, area } = req.query;
+  if (!aluno_id) return res.status(400).json({ erro: 'aluno_id é obrigatório' });
+
+  try {
+    const alunoIdReal = await resolverAlunoId(aluno_id);
+    if (!alunoIdReal) return res.status(404).json({ erro: 'Aluno não encontrado' });
+
+    const { data: matricula } = await supabase
+      .from('matriculas_estudos')
+      .select('segmento')
+      .eq('aluno_id', alunoIdReal)
+      .eq('status', 'ativa')
+      .maybeSingle();
+
+    let query = supabase
+      .from('murais')
+      .select('*')
+      .eq('ativo', true)
+      .order('created_at', { ascending: false });
+
+    if (area) query = query.eq('area', area);
+
+    const { data: murais, error } = await query;
+    if (error) throw error;
+
+    const muraisFiltrados = (murais || []).filter(m => {
+      if (!m.segmento || !matricula?.segmento) return true;
+      return String(m.segmento).toLowerCase() === String(matricula.segmento).toLowerCase();
+    });
+
+    if (muraisFiltrados.length === 0) return res.json({ murais: [] });
+
+    const muralIds = muraisFiltrados.map(m => m.id);
+    const { data: postagens } = await supabase
+      .from('postagens_murais')
+      .select('*')
+      .eq('aluno_id', alunoIdReal)
+      .in('mural_id', muralIds);
+
+    const mapaPostagens = Object.fromEntries((postagens || []).map(p => [p.mural_id, p]));
+
+    const resultado = muraisFiltrados.map(m => {
+      const post = mapaPostagens[m.id];
+      return {
+        ...m,
+        status: post?.status || 'PENDENTE',
+        texto_aluno: post?.texto || '',
+        nota_ia: post?.nota_ia ?? null,
+        feedback_ia: post?.feedback_ia || null,
+        tentativas: post?.tentativas || 0,
+        submetido_em: post?.submetido_em || null
+      };
+    });
+
+    return res.json({ murais: resultado });
+  } catch (err) {
+    console.error('[GET /api/murais]', err);
+    return res.status(500).json({ erro: 'Erro ao carregar murais do aluno' });
+  }
+});
+
+app.get('/api/murais/:id/postagens', async (req, res) => {
+  try {
+    const { data: postagens, error } = await supabase
+      .from('postagens_murais')
+      .select('id, mural_id, aluno_id, texto, status, submetido_em, alunos(nome_completo)')
+      .eq('mural_id', req.params.id)
+      .not('texto', 'is', null)
+      .order('submetido_em', { ascending: false });
+
+    if (error) throw error;
+
+    const formatado = (postagens || []).map(p => ({
+      id: p.id,
+      aluno_id: p.aluno_id,
+      aluno_nome: p.alunos?.nome_completo || 'Estudante',
+      texto: p.texto,
+      status: p.status,
+      submetido_em: p.submetido_em
+    }));
+
+    return res.json({ postagens: formatado });
+  } catch (err) {
+    console.error('[GET /api/murais/:id/postagens]', err);
+    return res.status(500).json({ erro: 'Erro ao listar postagens do mural' });
+  }
+});
+
+app.post('/api/murais/:id/mediar', async (req, res) => {
+  const { aluno_id, texto } = req.body;
+  if (!aluno_id || !texto) return res.status(400).json({ erro: 'Dados incompletos' });
+
+  try {
+    const alunoIdReal = await resolverAlunoId(aluno_id);
+    const [{ data: mural }, { data: matricula }] = await Promise.all([
+      supabase.from('murais').select('*').eq('id', req.params.id).single(),
+      supabase.from('matriculas_estudos').select('segmento').eq('aluno_id', alunoIdReal).eq('status', 'ativa').maybeSingle()
+    ]);
+
+    if (!mural) return res.status(404).json({ erro: 'Mural não encontrado' });
+
+    const resultado = await mediarMuralIA({
+      mural,
+      textoAluno: texto,
+      competencia: mural.competencia,
+      segmento: mural.segmento || matricula?.segmento || 'medio'
+    });
+
+    return res.json(resultado);
+  } catch (err) {
+    console.error('[POST /api/murais/:id/mediar]', err);
+    return res.status(500).json({ erro: 'Erro na mediação do mural' });
+  }
+});
+
+app.post('/api/murais/:id/submeter', async (req, res) => {
+  const { aluno_id, texto } = req.body;
+  if (!aluno_id || !texto) return res.status(400).json({ erro: 'Dados incompletos' });
+
+  try {
+    const alunoIdReal = await resolverAlunoId(aluno_id);
+    const [{ data: mural }, { data: matricula }, { data: atual }] = await Promise.all([
+      supabase.from('murais').select('*').eq('id', req.params.id).single(),
+      supabase.from('matriculas_estudos').select('segmento').eq('aluno_id', alunoIdReal).eq('status', 'ativa').maybeSingle(),
+      supabase.from('postagens_murais').select('tentativas').eq('mural_id', req.params.id).eq('aluno_id', alunoIdReal).maybeSingle()
+    ]);
+
+    if (!mural) return res.status(404).json({ erro: 'Mural não encontrado' });
+
+    const tentativas = (atual?.tentativas || 0) + 1;
+    if (tentativas > MAX_TENTATIVAS_MURAL) {
+      return res.status(400).json({ erro: 'Limite máximo de tentativas atingido para este mural.' });
+    }
+
+    const avaliacao = await avaliarMuralIA({
+      mural,
+      textoAluno: texto,
+      competencia: mural.competencia,
+      segmento: mural.segmento || matricula?.segmento || 'medio'
+    });
+
+    const { data: postagem, error } = await supabase
+      .from('postagens_murais')
+      .upsert({
+        mural_id: req.params.id,
+        aluno_id: alunoIdReal,
+        texto: texto.trim(),
+        nota_ia: avaliacao.nota,
+        feedback_ia: avaliacao.feedback,
+        status: avaliacao.status_sugerido,
+        tentativas,
+        submetido_em: new Date().toISOString(),
+        avaliado_em: new Date().toISOString()
+      }, { onConflict: 'mural_id,aluno_id', ignoreDuplicates: false })
+      .select()
+      .single();
+
+    if (error) throw error;
+
+    if (avaliacao.status_sugerido === 'FINALIZADA') {
+      try { await verificarConclusao(alunoIdReal); } catch (e) {}
+    }
+
+    return res.json({ postagem, avaliacao });
+  } catch (err) {
+    console.error('[POST /api/murais/:id/submeter]', err);
+    return res.status(500).json({ erro: 'Erro ao avaliar postagem do mural' });
+  }
+});
+
+// =====================================================================
 // MURAIS (ADMIN)
 // =====================================================================
 
