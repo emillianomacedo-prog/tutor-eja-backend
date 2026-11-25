@@ -587,22 +587,61 @@ app.get('/api/atividades', async (req, res) => {
   try {
     const alunoIdReal = await resolverAlunoId(aluno_id);
     if (!alunoIdReal) return res.status(404).json({ erro: 'Aluno não encontrado' });
-    const { data: matricula } = await supabase.from('matriculas_estudos').select('id').eq('aluno_id', alunoIdReal).eq('status', 'ativa').maybeSingle();
-    let habilidadesDispensadas = [];
+
+    const { data: matricula } = await supabase
+      .from('matriculas_estudos')
+      .select('id, segmento')
+      .eq('aluno_id', alunoIdReal)
+      .eq('status', 'ativa')
+      .maybeSingle();
+
+    let habilidadesDispensadas = new Set();
     if (matricula) {
-      const { data: dispensadas } = await supabase.from('habilidades_dispensadas').select('habilidade_codigo').eq('matricula_id', matricula.id);
-      if (dispensadas) habilidadesDispensadas = dispensadas.map(h => h.habilidade_codigo);
+      const { data: dispensadas } = await supabase
+        .from('habilidades_dispensadas')
+        .select('habilidade_codigo, area')
+        .eq('matricula_id', matricula.id);
+      if (dispensadas) {
+        dispensadas.forEach(h => {
+          habilidadesDispensadas.add(`${h.area}_${String(h.habilidade_codigo).trim()}`);
+          habilidadesDispensadas.add(String(h.habilidade_codigo).trim());
+        });
+      }
     }
-    const { data: atividades, error } = await supabase.from('atividades').select('id, competencia, habilidade_codigo, area, tipo, enunciado, alternativas, imagem_url, pontuacao_max').eq('competencia', competencia).eq('area', area).eq('ativa', true); 
+
+    const compNorm = String(competencia).trim().toUpperCase();
+    let queryAtiv = supabase
+      .from('atividades')
+      .select('id, competencia, habilidade_codigo, area, segmento, tipo, enunciado, alternativas, imagem_url, pontuacao_max, ativa')
+      .eq('area', area);
+
+    const { data: atividadesBrutas, error } = await queryAtiv;
     if (error) throw error;
-    if (!atividades || atividades.length === 0) return res.json({ atividades: [] });
-    
-    const atividadesPermitidas = atividades.filter(a => !habilidadesDispensadas.includes(a.habilidade_codigo));
+    if (!atividadesBrutas || atividadesBrutas.length === 0) return res.json({ atividades: [] });
+
+    const atividadesPermitidas = atividadesBrutas.filter(a => {
+      if (a.ativa === false) return false;
+      if (String(a.competencia || '').trim().toUpperCase() !== compNorm) return false;
+      if (matricula?.segmento && a.segmento && String(a.segmento).toLowerCase() !== String(matricula.segmento).toLowerCase()) {
+        return false;
+      }
+      const cod = String(a.habilidade_codigo || '').trim();
+      if (cod && (habilidadesDispensadas.has(`${a.area}_${cod}`) || habilidadesDispensadas.has(cod))) {
+        return false;
+      }
+      return true;
+    });
+
     atividadesPermitidas.sort((a, b) => (a.habilidade_codigo || '').localeCompare(b.habilidade_codigo || '', undefined, { numeric: true }));
 
     if (atividadesPermitidas.length === 0) return res.json({ atividades: [] });
     const ids = atividadesPermitidas.map(a => a.id);
-    const { data: respostas } = await supabase.from('respostas_atividades').select('atividade_id, status, nota, tentativas, feedback, arquivo_url').eq('aluno_id', alunoIdReal).in('atividade_id', ids);
+    const { data: respostas } = await supabase
+      .from('respostas_atividades')
+      .select('atividade_id, status, nota, tentativas, feedback, arquivo_url')
+      .eq('aluno_id', alunoIdReal)
+      .in('atividade_id', ids);
+
     const mapa = Object.fromEntries((respostas || []).map(r => [r.atividade_id, r]));
     const atividadesTratadas = atividadesPermitidas.map(a => {
       let alternativasTratadas = [];
@@ -613,7 +652,20 @@ app.get('/api/atividades', async (req, res) => {
           else if (Array.isArray(alt)) { alternativasTratadas = alt.map((txt, index) => ({ letra: String.fromCharCode(97 + index), texto: txt })); }
         } catch (e) { }
       }
-      return { ...a, alternativas: alternativasTratadas, status: mapa[a.id]?.status || 'INICIAR', nota: mapa[a.id]?.nota ?? null, tentativas: mapa[a.id]?.tentativas || 0, feedback: mapa[a.id]?.feedback || null, arquivo_url: mapa[a.id]?.arquivo_url || null };
+      const respAluno = mapa[a.id];
+      let statusAtual = respAluno?.status || 'INICIAR';
+      if (a.tipo === 'objetiva' && Number(respAluno?.tentativas) >= 2 && Number(respAluno?.nota) === 0) {
+        statusAtual = 'FINALIZADA';
+      }
+      return {
+        ...a,
+        alternativas: alternativasTratadas,
+        status: statusAtual,
+        nota: respAluno?.nota ?? null,
+        tentativas: respAluno?.tentativas || 0,
+        feedback: respAluno?.feedback || null,
+        arquivo_url: respAluno?.arquivo_url || null
+      };
     });
     return res.json({ atividades: atividadesTratadas });
   } catch (err) { return res.status(500).json({ erro: 'Erro ao listar', detalhe: err.message }); }
@@ -790,7 +842,7 @@ app.post('/api/admin/corrigir-atividade/:resposta_id', verificarToken, async (re
 });
 
 // =====================================================================
-// OUTRAS ROTAS DO ALUNO
+// OUTRAS ROTAS DO ALUNO (LIVROS, COMPETÊNCIAS E PROGRESSO)
 // =====================================================================
 
 app.get('/api/aluno/:matricula_id/habilidades', async (req, res) => {
@@ -816,35 +868,71 @@ app.get('/api/aluno/:matricula_id/habilidades', async (req, res) => {
   } catch (err) { return res.status(500).json({ erro: "Erro interno" }); }
 });
 
+// Lista TODAS as competências obrigatórias do segmento (catálogo + atividades cadastradas),
+// excluindo APENAS o que estiver em habilidades_dispensadas (nunca oculta concluídas).
 app.get('/api/aluno/:matricula_id/competencias-pendentes', async (req, res) => {
   const { matricula_id } = req.params;
   try {
-    const { data: matricula } = await supabase.from('matriculas_estudos').select('segmento').eq('id', matricula_id).single();
+    const { data: matricula } = await supabase
+      .from('matriculas_estudos')
+      .select('segmento')
+      .eq('id', matricula_id)
+      .single();
     if (!matricula) return res.status(404).json({ erro: "Matrícula não encontrada" });
-    const { data: habsPendentes } = await supabase.from('habilidades_a_desenvolver')
-      .select('habilidade_codigo, area')
-      .eq('matricula_id', matricula_id)
-      .neq('status', 'concluida'); 
-    if (!habsPendentes || habsPendentes.length === 0) return res.json({});
-    const { data: catalogo } = await supabase.from('catalogo_habilidades')
-      .select('habilidade_codigo, area, competencia')
-      .eq('segmento', matricula.segmento);
-    const mapaCompetencias = {};
-    catalogo.forEach(c => { mapaCompetencias[`${c.area}_${c.habilidade_codigo}`] = c.competencia; });
-    const compsPorArea = {};
-    habsPendentes.forEach(h => {
-      const competencia = mapaCompetencias[`${h.area}_${h.habilidade_codigo}`];
-      if (competencia) {
-        if (!compsPorArea[h.area]) compsPorArea[h.area] = new Set();
-        compsPorArea[h.area].add(competencia);
-      }
+
+    const [{ data: catalogo }, { data: atividadesSeg }, { data: dispensadas }] = await Promise.all([
+      supabase
+        .from('catalogo_habilidades')
+        .select('habilidade_codigo, area, competencia')
+        .eq('segmento', matricula.segmento),
+      supabase
+        .from('atividades')
+        .select('habilidade_codigo, area, competencia, ativa')
+        .eq('segmento', matricula.segmento),
+      supabase
+        .from('habilidades_dispensadas')
+        .select('habilidade_codigo, area')
+        .eq('matricula_id', matricula_id)
+    ]);
+
+    const dispensadasSet = new Set();
+    (dispensadas || []).forEach(d => {
+      const cod = String(d.habilidade_codigo || '').trim();
+      dispensadasSet.add(`${d.area}_${cod}`);
+      dispensadasSet.add(cod);
     });
+
+    const compsPorArea = {};
+
+    (catalogo || []).forEach(c => {
+      const cod = String(c.habilidade_codigo || '').trim();
+      if (cod && (dispensadasSet.has(`${c.area}_${cod}`) || dispensadasSet.has(cod))) return;
+      const comp = String(c.competencia || '').trim().toUpperCase();
+      if (!comp || !c.area) return;
+      if (!compsPorArea[c.area]) compsPorArea[c.area] = new Set();
+      compsPorArea[c.area].add(comp);
+    });
+
+    (atividadesSeg || []).forEach(a => {
+      if (a.ativa === false) return;
+      const cod = String(a.habilidade_codigo || '').trim();
+      if (cod && (dispensadasSet.has(`${a.area}_${cod}`) || dispensadasSet.has(cod))) return;
+      const comp = String(a.competencia || '').trim().toUpperCase();
+      if (!comp || !a.area) return;
+      if (!compsPorArea[a.area]) compsPorArea[a.area] = new Set();
+      compsPorArea[a.area].add(comp);
+    });
+
     const resultado = {};
-    for (const [area, comps] of Object.entries(compsPorArea)) resultado[area] = Array.from(comps).sort();
+    for (const [area, comps] of Object.entries(compsPorArea)) {
+      resultado[area] = Array.from(comps).sort((a, b) =>
+        a.localeCompare(b, undefined, { numeric: true })
+      );
+    }
     return res.json(resultado);
-  } catch (err) { 
+  } catch (err) {
     console.error(err);
-    return res.status(500).json({ erro: "Erro interno" }); 
+    return res.status(500).json({ erro: "Erro interno" });
   }
 });
 
@@ -1541,68 +1629,129 @@ app.post('/api/finalizar-curso/:matricula_id', async (req, res) => {
 });
 
 // =====================================================================
-// MURAIS (ALUNO E PERSONIFICAÇÃO)
+// MURAIS (ALUNO E PERSONIFICAÇÃO — CONCLUÍDOS PERMANECEM VISÍVEIS)
 // =====================================================================
+
+async function listarMuraisDoAluno(alunoIdParam, area) {
+  const alunoIdReal = await resolverAlunoId(alunoIdParam);
+  if (!alunoIdReal) return { erro: 'Aluno não encontrado', status: 404 };
+
+  const { data: matricula } = await supabase
+    .from('matriculas_estudos')
+    .select('segmento')
+    .eq('aluno_id', alunoIdReal)
+    .eq('status', 'ativa')
+    .maybeSingle();
+
+  let query = supabase
+    .from('murais')
+    .select('*')
+    .order('created_at', { ascending: false });
+
+  if (area) query = query.eq('area', area);
+
+  const { data: murais, error } = await query;
+  if (error) throw error;
+
+  const muraisFiltrados = (murais || []).filter(m => {
+    if (m.ativo === false) return false;
+    if (!m.segmento || !matricula?.segmento) return true;
+    return String(m.segmento).toLowerCase() === String(matricula.segmento).toLowerCase();
+  });
+
+  if (muraisFiltrados.length === 0) return { murais: [] };
+
+  const muralIds = muraisFiltrados.map(m => m.id);
+  const { data: postagens } = await supabase
+    .from('postagens_murais')
+    .select('*')
+    .eq('aluno_id', alunoIdReal)
+    .in('mural_id', muralIds);
+
+  const mapaPostagens = Object.fromEntries((postagens || []).map(p => [p.mural_id, p]));
+
+  const resultado = muraisFiltrados.map(m => {
+    const post = mapaPostagens[m.id];
+    return {
+      ...m,
+      status: post?.status || 'PENDENTE',
+      texto_aluno: post?.texto || '',
+      nota_ia: post?.nota_ia ?? null,
+      feedback_ia: post?.feedback_ia || null,
+      tentativas: post?.tentativas || 0,
+      submetido_em: post?.submetido_em || null
+    };
+  });
+
+  return { murais: resultado };
+}
 
 app.get('/api/murais', async (req, res) => {
   const { aluno_id, area } = req.query;
   if (!aluno_id) return res.status(400).json({ erro: 'aluno_id é obrigatório' });
 
   try {
-    const alunoIdReal = await resolverAlunoId(aluno_id);
-    if (!alunoIdReal) return res.status(404).json({ erro: 'Aluno não encontrado' });
+    const resp = await listarMuraisDoAluno(aluno_id, area);
+    if (resp.erro) return res.status(resp.status || 400).json({ erro: resp.erro });
+    return res.json({ murais: resp.murais });
+  } catch (err) {
+    console.error('[GET /api/murais]', err);
+    return res.status(500).json({ erro: 'Erro ao carregar murais do aluno' });
+  }
+});
 
-    const { data: matricula } = await supabase
-      .from('matriculas_estudos')
-      .select('segmento')
-      .eq('aluno_id', alunoIdReal)
-      .eq('status', 'ativa')
-      .maybeSingle();
+app.get('/api/aluno/:matricula_id/murais', async (req, res) => {
+  const { matricula_id } = req.params;
+  const { area } = req.query;
+  try {
+    const resp = await listarMuraisDoAluno(matricula_id, area);
+    if (resp.erro) return res.status(resp.status || 400).json({ erro: resp.erro });
+    return res.json({ murais: resp.murais });
+  } catch (err) {
+    console.error('[GET /api/aluno/:matricula_id/murais]', err);
+    return res.status(500).json({ erro: 'Erro ao carregar murais do aluno' });
+  }
+});
 
-    let query = supabase
+app.get('/api/murais/:id', async (req, res) => {
+  const { aluno_id } = req.query;
+  try {
+    const { data: mural, error } = await supabase
       .from('murais')
       .select('*')
-      .eq('ativo', true)
-      .order('created_at', { ascending: false });
+      .eq('id', req.params.id)
+      .single();
 
-    if (area) query = query.eq('area', area);
+    if (error || !mural) return res.status(404).json({ erro: 'Mural não encontrado' });
 
-    const { data: murais, error } = await query;
-    if (error) throw error;
+    let post = null;
+    if (aluno_id) {
+      const alunoIdReal = await resolverAlunoId(aluno_id);
+      if (alunoIdReal) {
+        const { data } = await supabase
+          .from('postagens_murais')
+          .select('*')
+          .eq('mural_id', req.params.id)
+          .eq('aluno_id', alunoIdReal)
+          .maybeSingle();
+        post = data;
+      }
+    }
 
-    const muraisFiltrados = (murais || []).filter(m => {
-      if (!m.segmento || !matricula?.segmento) return true;
-      return String(m.segmento).toLowerCase() === String(matricula.segmento).toLowerCase();
-    });
-
-    if (muraisFiltrados.length === 0) return res.json({ murais: [] });
-
-    const muralIds = muraisFiltrados.map(m => m.id);
-    const { data: postagens } = await supabase
-      .from('postagens_murais')
-      .select('*')
-      .eq('aluno_id', alunoIdReal)
-      .in('mural_id', muralIds);
-
-    const mapaPostagens = Object.fromEntries((postagens || []).map(p => [p.mural_id, p]));
-
-    const resultado = muraisFiltrados.map(m => {
-      const post = mapaPostagens[m.id];
-      return {
-        ...m,
+    return res.json({
+      mural: {
+        ...mural,
         status: post?.status || 'PENDENTE',
         texto_aluno: post?.texto || '',
         nota_ia: post?.nota_ia ?? null,
         feedback_ia: post?.feedback_ia || null,
         tentativas: post?.tentativas || 0,
         submetido_em: post?.submetido_em || null
-      };
+      }
     });
-
-    return res.json({ murais: resultado });
   } catch (err) {
-    console.error('[GET /api/murais]', err);
-    return res.status(500).json({ erro: 'Erro ao carregar murais do aluno' });
+    console.error('[GET /api/murais/:id]', err);
+    return res.status(500).json({ erro: 'Erro ao carregar mural' });
   }
 });
 
@@ -1660,7 +1809,7 @@ app.post('/api/murais/:id/mediar', async (req, res) => {
   }
 });
 
-app.post('/api/murais/:id/submeter', async (req, res) => {
+async function processarSubmissaoMural(req, res) {
   const { aluno_id, texto } = req.body;
   if (!aluno_id || !texto) return res.status(400).json({ erro: 'Dados incompletos' });
 
@@ -1713,7 +1862,10 @@ app.post('/api/murais/:id/submeter', async (req, res) => {
     console.error('[POST /api/murais/:id/submeter]', err);
     return res.status(500).json({ erro: 'Erro ao avaliar postagem do mural' });
   }
-});
+}
+
+app.post('/api/murais/:id/submeter', processarSubmissaoMural);
+app.post('/api/murais/:id/responder', processarSubmissaoMural);
 
 // =====================================================================
 // MURAIS (ADMIN)
