@@ -610,12 +610,11 @@ app.get('/api/atividades', async (req, res) => {
     }
 
     const compNorm = String(competencia).trim().toUpperCase();
-    let queryAtiv = supabase
+    const { data: atividadesBrutas, error } = await supabase
       .from('atividades')
       .select('id, competencia, habilidade_codigo, area, segmento, tipo, enunciado, alternativas, imagem_url, pontuacao_max, ativa')
       .eq('area', area);
 
-    const { data: atividadesBrutas, error } = await queryAtiv;
     if (error) throw error;
     if (!atividadesBrutas || atividadesBrutas.length === 0) return res.json({ atividades: [] });
 
@@ -868,8 +867,8 @@ app.get('/api/aluno/:matricula_id/habilidades', async (req, res) => {
   } catch (err) { return res.status(500).json({ erro: "Erro interno" }); }
 });
 
-// Lista TODAS as competências obrigatórias do segmento (catálogo + atividades cadastradas),
-// excluindo APENAS o que estiver em habilidades_dispensadas (nunca oculta concluídas).
+// Lista TODAS as competências da matriz oficial do segmento, excluindo APENAS
+// o que está registrado em habilidades_dispensadas (nunca oculta concluídas).
 app.get('/api/aluno/:matricula_id/competencias-pendentes', async (req, res) => {
   const { matricula_id } = req.params;
   try {
@@ -880,14 +879,10 @@ app.get('/api/aluno/:matricula_id/competencias-pendentes', async (req, res) => {
       .single();
     if (!matricula) return res.status(404).json({ erro: "Matrícula não encontrada" });
 
-    const [{ data: catalogo }, { data: atividadesSeg }, { data: dispensadas }] = await Promise.all([
+    const [{ data: catalogo }, { data: dispensadas }] = await Promise.all([
       supabase
         .from('catalogo_habilidades')
         .select('habilidade_codigo, area, competencia')
-        .eq('segmento', matricula.segmento),
-      supabase
-        .from('atividades')
-        .select('habilidade_codigo, area, competencia, ativa')
         .eq('segmento', matricula.segmento),
       supabase
         .from('habilidades_dispensadas')
@@ -903,7 +898,6 @@ app.get('/api/aluno/:matricula_id/competencias-pendentes', async (req, res) => {
     });
 
     const compsPorArea = {};
-
     (catalogo || []).forEach(c => {
       const cod = String(c.habilidade_codigo || '').trim();
       if (cod && (dispensadasSet.has(`${c.area}_${cod}`) || dispensadasSet.has(cod))) return;
@@ -911,16 +905,6 @@ app.get('/api/aluno/:matricula_id/competencias-pendentes', async (req, res) => {
       if (!comp || !c.area) return;
       if (!compsPorArea[c.area]) compsPorArea[c.area] = new Set();
       compsPorArea[c.area].add(comp);
-    });
-
-    (atividadesSeg || []).forEach(a => {
-      if (a.ativa === false) return;
-      const cod = String(a.habilidade_codigo || '').trim();
-      if (cod && (dispensadasSet.has(`${a.area}_${cod}`) || dispensadasSet.has(cod))) return;
-      const comp = String(a.competencia || '').trim().toUpperCase();
-      if (!comp || !a.area) return;
-      if (!compsPorArea[a.area]) compsPorArea[a.area] = new Set();
-      compsPorArea[a.area].add(comp);
     });
 
     const resultado = {};
