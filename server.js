@@ -595,7 +595,14 @@ app.get('/api/atividades', async (req, res) => {
       .eq('status', 'ativa')
       .maybeSingle();
 
-    let habilidadesDispensadas = new Set();
+    const normHab = (comp, cod) => {
+      const c = String(cod || '').trim().toUpperCase();
+      const matchH = c.match(/H\d+/);
+      if (matchH) return matchH[0]; // extrai "H1" tanto de "C1H1" quanto de "H1"
+      return c;
+    };
+
+    const habilidadesDispensadas = new Set();
     if (matricula) {
       const { data: dispensadas } = await supabase
         .from('habilidades_dispensadas')
@@ -603,13 +610,18 @@ app.get('/api/atividades', async (req, res) => {
         .eq('matricula_id', matricula.id);
       if (dispensadas) {
         dispensadas.forEach(h => {
-          habilidadesDispensadas.add(`${h.area}_${String(h.habilidade_codigo).trim()}`);
-          habilidadesDispensadas.add(String(h.habilidade_codigo).trim());
+          const areaDisp = String(h.area || '').trim().toLowerCase();
+          const codBruto = String(h.habilidade_codigo || '').trim().toUpperCase();
+          const codH = normHab('', codBruto);
+          if (areaDisp && codBruto) habilidadesDispensadas.add(`${areaDisp}_${codBruto}`);
+          if (areaDisp && codH) habilidadesDispensadas.add(`${areaDisp}_${codH}`);
         });
       }
     }
 
     const compNorm = String(competencia).trim().toUpperCase();
+    const areaNorm = String(area).trim().toLowerCase();
+
     const { data: atividadesBrutas, error } = await supabase
       .from('atividades')
       .select('id, competencia, habilidade_codigo, area, segmento, tipo, enunciado, alternativas, imagem_url, pontuacao_max, ativa')
@@ -624,8 +636,12 @@ app.get('/api/atividades', async (req, res) => {
       if (matricula?.segmento && a.segmento && String(a.segmento).toLowerCase() !== String(matricula.segmento).toLowerCase()) {
         return false;
       }
-      const cod = String(a.habilidade_codigo || '').trim();
-      if (cod && (habilidadesDispensadas.has(`${a.area}_${cod}`) || habilidadesDispensadas.has(cod))) {
+      const codBruto = String(a.habilidade_codigo || '').trim().toUpperCase();
+      const codH = normHab(compNorm, codBruto);
+      if (
+        (codBruto && habilidadesDispensadas.has(`${areaNorm}_${codBruto}`)) ||
+        (codH && habilidadesDispensadas.has(`${areaNorm}_${codH}`))
+      ) {
         return false;
       }
       return true;
@@ -890,21 +906,30 @@ app.get('/api/aluno/:matricula_id/competencias-pendentes', async (req, res) => {
         .eq('matricula_id', matricula_id)
     ]);
 
+    // Compara ESTRITAMENTE área + código da habilidade (ex: ciencias_humanas_C1H1)
     const dispensadasSet = new Set();
     (dispensadas || []).forEach(d => {
-      const cod = String(d.habilidade_codigo || '').trim();
-      dispensadasSet.add(`${d.area}_${cod}`);
-      dispensadasSet.add(cod);
+      const area = String(d.area || '').trim().toLowerCase();
+      const cod = String(d.habilidade_codigo || '').trim().toUpperCase();
+      if (area && cod) {
+        dispensadasSet.add(`${area}_${cod}`);
+      }
     });
 
     const compsPorArea = {};
     (catalogo || []).forEach(c => {
-      const cod = String(c.habilidade_codigo || '').trim();
-      if (cod && (dispensadasSet.has(`${c.area}_${cod}`) || dispensadasSet.has(cod))) return;
+      const area = String(c.area || '').trim().toLowerCase();
+      const cod = String(c.habilidade_codigo || '').trim().toUpperCase();
+      if (!area) return;
+
+      // Só ignora se estiver dispensada NAQUELA MESMA ÁREA
+      if (cod && dispensadasSet.has(`${area}_${cod}`)) return;
+
       const comp = String(c.competencia || '').trim().toUpperCase();
-      if (!comp || !c.area) return;
-      if (!compsPorArea[c.area]) compsPorArea[c.area] = new Set();
-      compsPorArea[c.area].add(comp);
+      if (!comp) return;
+
+      if (!compsPorArea[area]) compsPorArea[area] = new Set();
+      compsPorArea[area].add(comp);
     });
 
     const resultado = {};
