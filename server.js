@@ -1875,7 +1875,9 @@ async function processarSubmissaoMural(req, res) {
 
 app.post('/api/murais/:id/submeter', processarSubmissaoMural);
 app.post('/api/murais/:id/responder', processarSubmissaoMural);
-
+app.post('/api/murais/:id/submeter', processarSubmissaoMural);
+app.post('/api/murais/:id/responder', processarSubmissaoMural);
+app.post('/api/murais/:id/avaliar', processarSubmissaoMural);
 // =====================================================================
 // MURAIS (ADMIN)
 // =====================================================================
